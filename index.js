@@ -18,7 +18,7 @@ class MouseRecorder {
     this.sessionDir = './sessions';
     this.recordingsDir = './recordings';
     this.postReplayScript = './post-replay.sh';  // Default script path
-    this.postReplayWaitTime = 10000;  // 10 seconds in milliseconds
+    this.postReplayWaitTime = 6000;  // 10 seconds in milliseconds
     this.cancelPostReplay = false;  // Flag to cancel post-replay sequence
     this.inputMode = 'normal';
     this.inputBuffer = '';
