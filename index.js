@@ -1,0 +1,660 @@
+import { chromium } from 'playwright';
+import * as readline from 'readline';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as crypto from 'crypto';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
+
+class MouseRecorder {
+  constructor() {
+    this.browser = null;
+    this.context = null;
+    this.page = null;
+    this.recordedActions = [];
+    this.isRecording = false;
+    this.currentUrl = null;
+    this.sessionDir = './sessions';
+    this.recordingsDir = './recordings';
+    this.postReplayScript = './post-replay.sh';  // Default script path
+    this.postReplayWaitTime = 10000;  // 10 seconds in milliseconds
+    this.cancelPostReplay = false;  // Flag to cancel post-replay sequence
+  }
+
+  getSessionPath(url) {
+    const hash = crypto.createHash('md5').update(url).digest('hex');
+    return path.join(this.sessionDir, `session_${hash}`);
+  }
+
+  async start() {
+    console.log('\n=== Playwright Mouse Recorder ===\n');
+
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout
+    });
+
+    const askUrl = () => {
+      return new Promise((resolve) => {
+        rl.question('Enter website URL: ', (answer) => {
+          rl.close();
+          resolve(answer);
+        });
+      });
+    };
+
+    const url = await askUrl();
+    let finalUrl = url;
+
+    if (!finalUrl.startsWith('http://') && !finalUrl.startsWith('https://')) {
+      finalUrl = 'https://' + finalUrl;
+    }
+
+    this.currentUrl = finalUrl;
+    await this.initBrowser(finalUrl);
+
+    console.log('\n=== Controls ===');
+    console.log('Press "s" - Start/Restart recording');
+    console.log('Press "f" - Finish recording');
+    console.log('Press "r" - Replay recorded actions');
+    console.log('Press "p" - Enable packet loss (records during recording!)');
+    console.log('Press "n" - Restore network (records during recording!)');
+    console.log('Press "x" - Cancel post-replay sequence (during 10s wait)');
+    console.log('Press "q" - Quit\n');
+    console.log('TIP: Press "p" during recording to insert packet loss into the sequence!');
+
+    this.setupKeyboardListener();
+  }
+
+  async initBrowser(url) {
+    console.log('\nInitializing browser...');
+
+    this.browser = await chromium.launch({
+      headless: false,
+      slowMo: 50,
+      args: [
+        '--start-maximized',
+        '--disable-blink-features=AutomationControlled'
+      ]
+    });
+
+    const sessionPath = this.getSessionPath(url);
+
+    // Context options for maximized window
+    const contextOptions = {
+      viewport: null, // Disable default viewport to use full window size
+      ...(fs.existsSync(sessionPath) && { storageState: sessionPath })
+    };
+
+    if (fs.existsSync(sessionPath)) {
+      console.log('Loading existing session...');
+      this.context = await this.browser.newContext(contextOptions);
+    } else {
+      console.log('Creating new session...');
+      this.context = await this.browser.newContext(contextOptions);
+    }
+
+    this.page = await this.context.newPage();
+
+    console.log(`Navigating to ${url}...`);
+    await this.page.goto(url);
+
+    console.log('Saving session...');
+    await this.context.storageState({ path: sessionPath });
+
+    console.log('Browser ready!\n');
+  }
+
+  setupKeyboardListener() {
+    // Ensure stdin is in the correct mode
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(true);
+    }
+
+    process.stdin.setEncoding('utf8');
+    readline.emitKeypressEvents(process.stdin);
+
+    console.log('[Keyboard listener active - ready for input]');
+
+    process.stdin.on('keypress', async (str, key) => {
+      if (!key) return;
+
+      if (key.ctrl && key.name === 'c') {
+        await this.cleanup();
+        process.exit();
+      }
+
+      if (key.name === 's') {
+        await this.startRecording();
+      } else if (key.name === 'f') {
+        await this.stopRecording();
+      } else if (key.name === 'r') {
+        await this.replay();
+      } else if (key.name === 'p') {
+        // If recording, save it as an action; otherwise execute immediately
+        if (this.isRecording) {
+          await this.recordNetworkAction('enablePacketLoss');
+        } else {
+          await this.enablePacketLoss();
+        }
+      } else if (key.name === 'n') {
+        // If recording, save it as an action; otherwise execute immediately
+        if (this.isRecording) {
+          await this.recordNetworkAction('disablePacketLoss');
+        } else {
+          await this.disablePacketLoss();
+        }
+      } else if (key.name === 'x') {
+        // Cancel post-replay sequence
+        this.cancelPostReplay = true;
+        console.log('\n[CANCELLED] Post-replay sequence cancelled by user');
+      } else if (key.name === 'q') {
+        await this.cleanup();
+        process.exit();
+      }
+    });
+
+    // Resume stdin so it starts listening
+    process.stdin.resume();
+  }
+
+  async startRecording() {
+    this.recordedActions = [];
+    this.isRecording = true;
+    console.log('\n[RECORDING STARTED] - All previous recordings cleared');
+    console.log('[INFO] Canvas-aware recording active - click and drag on the page');
+
+    try {
+      await this.page.evaluate(() => {
+        // Clean up old listeners and indicators if they exist
+        if (window.__mouseRecorderListeners) {
+          const listeners = window.__mouseRecorderListeners;
+          document.removeEventListener('mousedown', listeners.mousedown, true);
+          document.removeEventListener('mousemove', listeners.mousemove, true);
+          document.removeEventListener('mouseup', listeners.mouseup, true);
+          document.removeEventListener('click', listeners.click, true);
+        }
+
+        // Remove old recording indicator
+        const oldIndicator = document.getElementById('__mouse_recorder_indicator');
+        if (oldIndicator) oldIndicator.remove();
+
+        // Add visual recording indicator
+        const indicator = document.createElement('div');
+        indicator.id = '__mouse_recorder_indicator';
+        indicator.textContent = '🔴 RECORDING';
+        indicator.style.cssText = `
+          position: fixed;
+          top: 10px;
+          right: 10px;
+          background: red;
+          color: white;
+          padding: 8px 16px;
+          border-radius: 4px;
+          font-family: monospace;
+          font-size: 14px;
+          font-weight: bold;
+          z-index: 999999;
+          pointer-events: none;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        `;
+        document.body.appendChild(indicator);
+
+        // Initialize recorder state
+        window.__mouseRecorder = {
+          actions: [],
+          isMouseDown: false,
+          startX: 0,
+          startY: 0,
+          scrollX: 0,
+          scrollY: 0
+        };
+
+        // Function to show visual click effect
+        const showClickEffect = (x, y, isCanvas = false) => {
+          const effect = document.createElement('div');
+          effect.style.cssText = `
+            position: fixed;
+            left: ${x}px;
+            top: ${y}px;
+            width: 20px;
+            height: 20px;
+            margin-left: -10px;
+            margin-top: -10px;
+            border: 3px solid ${isCanvas ? '#00ff00' : '#ff0000'};
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: 999998;
+            animation: clickRipple 0.6s ease-out;
+          `;
+
+          // Add CSS animation if not already present
+          if (!document.getElementById('__click_effect_style')) {
+            const style = document.createElement('style');
+            style.id = '__click_effect_style';
+            style.textContent = `
+              @keyframes clickRipple {
+                0% {
+                  transform: scale(1);
+                  opacity: 1;
+                }
+                100% {
+                  transform: scale(3);
+                  opacity: 0;
+                }
+              }
+            `;
+            document.head.appendChild(style);
+          }
+
+          document.body.appendChild(effect);
+
+          // Remove effect after animation
+          setTimeout(() => effect.remove(), 600);
+        };
+
+        const recordAction = (type, x, y, isDrag = false, target = null) => {
+          const isCanvas = target && target.tagName === 'CANVAS';
+
+          const action = {
+            type,
+            x,
+            y,
+            pageX: x + window.scrollX,
+            pageY: y + window.scrollY,
+            isDrag,
+            timestamp: Date.now(),
+            isCanvas
+          };
+
+          window.__mouseRecorder.actions.push(action);
+
+          // Show visual effect for clicks and mousedown
+          if (type === 'click' || type === 'mousedown') {
+            showClickEffect(x, y, isCanvas);
+          }
+
+          // Log canvas interactions
+          if (isCanvas) {
+            console.log(`[Canvas ${type}] at (${x}, ${y})`);
+          }
+        };
+
+        // Define event listeners - use capture phase to catch canvas events
+        const listeners = {
+          mousedown: (e) => {
+            window.__mouseRecorder.isMouseDown = true;
+            window.__mouseRecorder.startX = e.clientX;
+            window.__mouseRecorder.startY = e.clientY;
+            window.__mouseRecorder.scrollX = window.scrollX;
+            window.__mouseRecorder.scrollY = window.scrollY;
+            recordAction('mousedown', e.clientX, e.clientY, false, e.target);
+          },
+          mousemove: (e) => {
+            if (window.__mouseRecorder.isMouseDown) {
+              recordAction('mousemove', e.clientX, e.clientY, true, e.target);
+            }
+          },
+          mouseup: (e) => {
+            if (window.__mouseRecorder.isMouseDown) {
+              const isDrag = Math.abs(e.clientX - window.__mouseRecorder.startX) > 5 ||
+                            Math.abs(e.clientY - window.__mouseRecorder.startY) > 5;
+
+              recordAction('mouseup', e.clientX, e.clientY, isDrag, e.target);
+              window.__mouseRecorder.isMouseDown = false;
+            }
+          },
+          click: (e) => {
+            // Only record standalone clicks (not part of drag operations)
+            if (!window.__mouseRecorder.isMouseDown) {
+              recordAction('click', e.clientX, e.clientY, false, e.target);
+            }
+          }
+        };
+
+        // Store listeners for cleanup
+        window.__mouseRecorderListeners = listeners;
+
+        // Add event listeners with capture phase to intercept canvas events
+        document.addEventListener('mousedown', listeners.mousedown, true);
+        document.addEventListener('mousemove', listeners.mousemove, true);
+        document.addEventListener('mouseup', listeners.mouseup, true);
+        document.addEventListener('click', listeners.click, true);
+      });
+
+      console.log('[SUCCESS] Recording initialized - canvas interactions will be captured');
+    } catch (error) {
+      console.log(`\n[ERROR] Failed to start recording: ${error.message}`);
+      this.isRecording = false;
+    }
+  }
+
+  async recordNetworkAction(actionType) {
+    if (!this.isRecording) {
+      console.log('\n[ERROR] Not recording');
+      return;
+    }
+
+    try {
+      await this.page.evaluate((actionType) => {
+        if (window.__mouseRecorder) {
+          window.__mouseRecorder.actions.push({
+            type: 'networkAction',
+            networkActionType: actionType,
+            timestamp: Date.now()
+          });
+        }
+      }, actionType);
+
+      if (actionType === 'enablePacketLoss') {
+        console.log('[RECORDED] Enable packet loss action added to sequence');
+      } else if (actionType === 'disablePacketLoss') {
+        console.log('[RECORDED] Disable packet loss action added to sequence');
+      }
+    } catch (error) {
+      console.log(`\n[ERROR] Failed to record network action: ${error.message}`);
+    }
+  }
+
+  async stopRecording() {
+    if (!this.isRecording) {
+      console.log('\n[ERROR] No recording in progress');
+      return;
+    }
+
+    try {
+      this.recordedActions = await this.page.evaluate(() => {
+        // Remove visual indicator
+        const indicator = document.getElementById('__mouse_recorder_indicator');
+        if (indicator) indicator.remove();
+
+        if (!window.__mouseRecorder || !window.__mouseRecorder.actions) {
+          return [];
+        }
+        return window.__mouseRecorder.actions;
+      });
+
+      this.isRecording = false;
+
+      if (this.recordedActions.length === 0) {
+        console.log('\n[RECORDING STOPPED] - No actions captured');
+        console.log('[TIP] Make sure you clicked or dragged on the page after pressing "s"');
+        return;
+      }
+
+      // Count different action types
+      const canvasActions = this.recordedActions.filter(a => a.isCanvas).length;
+      const networkActions = this.recordedActions.filter(a => a.type === 'networkAction').length;
+      const totalActions = this.recordedActions.length;
+
+      console.log(`\n[RECORDING STOPPED] - Captured ${totalActions} actions`);
+      if (canvasActions > 0) {
+        console.log(`[INFO] ${canvasActions} actions on canvas elements`);
+      }
+      if (networkActions > 0) {
+        console.log(`[INFO] ${networkActions} network actions (packet loss toggles)`);
+      }
+
+      const recordingPath = path.join(this.recordingsDir, `recording_${Date.now()}.json`);
+      fs.writeFileSync(recordingPath, JSON.stringify(this.recordedActions, null, 2));
+      console.log(`[SAVED] Recording saved to ${recordingPath}`);
+    } catch (error) {
+      console.log(`\n[ERROR] Failed to stop recording: ${error.message}`);
+      console.log('[TIP] The page may have navigated. Press "s" to start recording again.');
+      this.isRecording = false;
+
+      // Try to remove indicator even on error
+      try {
+        await this.page.evaluate(() => {
+          const indicator = document.getElementById('__mouse_recorder_indicator');
+          if (indicator) indicator.remove();
+        });
+      } catch {}
+    }
+  }
+
+  async replay() {
+    if (this.recordedActions.length === 0) {
+      console.log('\n[ERROR] No recorded actions to replay');
+      return;
+    }
+
+    console.log(`\n[REPLAY STARTED] - Playing ${this.recordedActions.length} actions`);
+
+    // Inject click effect function into page for replay visualization
+    await this.page.evaluate(() => {
+      if (!window.__showReplayClickEffect) {
+        // Add CSS animation if not already present
+        if (!document.getElementById('__click_effect_style')) {
+          const style = document.createElement('style');
+          style.id = '__click_effect_style';
+          style.textContent = `
+            @keyframes clickRipple {
+              0% {
+                transform: scale(1);
+                opacity: 1;
+              }
+              100% {
+                transform: scale(3);
+                opacity: 0;
+              }
+            }
+          `;
+          document.head.appendChild(style);
+        }
+
+        window.__showReplayClickEffect = (x, y, isCanvas = false) => {
+          const effect = document.createElement('div');
+          effect.style.cssText = `
+            position: fixed;
+            left: ${x}px;
+            top: ${y}px;
+            width: 20px;
+            height: 20px;
+            margin-left: -10px;
+            margin-top: -10px;
+            border: 3px solid ${isCanvas ? '#00ff00' : '#0099ff'};
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: 999998;
+            animation: clickRipple 0.6s ease-out;
+          `;
+          document.body.appendChild(effect);
+          setTimeout(() => effect.remove(), 600);
+        };
+      }
+    });
+
+    for (let i = 0; i < this.recordedActions.length; i++) {
+      const action = this.recordedActions[i];
+      const canvasLabel = action.isCanvas ? ' [CANVAS]' : '';
+
+      try {
+        if (action.type === 'networkAction') {
+          // Handle network actions
+          if (action.networkActionType === 'enablePacketLoss') {
+            await this.enablePacketLoss();
+            console.log(`[${i + 1}/${this.recordedActions.length}] NETWORK: Enabled packet loss`);
+          } else if (action.networkActionType === 'disablePacketLoss') {
+            await this.disablePacketLoss();
+            console.log(`[${i + 1}/${this.recordedActions.length}] NETWORK: Disabled packet loss`);
+          }
+        } else if (action.type === 'click') {
+          await this.page.evaluate(({ x, y, isCanvas }) => {
+            window.__showReplayClickEffect(x, y, isCanvas);
+          }, { x: action.x, y: action.y, isCanvas: action.isCanvas });
+          await this.page.mouse.click(action.x, action.y);
+          console.log(`[${i + 1}/${this.recordedActions.length}] Click at (${action.x}, ${action.y})${canvasLabel}`);
+        } else if (action.type === 'mousedown') {
+          await this.page.evaluate(({ x, y, isCanvas }) => {
+            window.__showReplayClickEffect(x, y, isCanvas);
+          }, { x: action.x, y: action.y, isCanvas: action.isCanvas });
+          await this.page.mouse.move(action.x, action.y);
+          await this.page.mouse.down();
+          console.log(`[${i + 1}/${this.recordedActions.length}] Mouse down at (${action.x}, ${action.y})${canvasLabel}`);
+        } else if (action.type === 'mousemove' && action.isDrag) {
+          await this.page.mouse.move(action.x, action.y);
+          // Only log every 10th drag move to avoid spam
+          if (i % 10 === 0) {
+            console.log(`[${i + 1}/${this.recordedActions.length}] Drag to (${action.x}, ${action.y})${canvasLabel}`);
+          }
+        } else if (action.type === 'mouseup') {
+          await this.page.mouse.move(action.x, action.y);
+          await this.page.mouse.up();
+          console.log(`[${i + 1}/${this.recordedActions.length}] Mouse up at (${action.x}, ${action.y})${canvasLabel}`);
+        }
+
+        if (i < this.recordedActions.length - 1) {
+          const nextAction = this.recordedActions[i + 1];
+          const delay = Math.min(nextAction.timestamp - action.timestamp, 1000);
+          if (delay > 0) {
+            await this.page.waitForTimeout(delay);
+          }
+        }
+      } catch (error) {
+        console.log(`[ERROR] Failed to replay action ${i + 1}: ${error.message}`);
+      }
+    }
+
+    console.log('[REPLAY COMPLETED]\n');
+
+    // Post-replay sequence: wait, run script, reload
+    await this.postReplaySequence();
+  }
+
+  async postReplaySequence() {
+    try {
+      // Reset cancel flag
+      this.cancelPostReplay = false;
+
+      // Step 1: Wait for configured time (default 10 seconds) with cancellation checks
+      console.log(`[POST-REPLAY] Waiting ${this.postReplayWaitTime / 1000} seconds...`);
+      console.log('[TIP] Press "x" to cancel script execution and reload');
+
+      const waitInterval = 500; // Check every 500ms
+      const iterations = this.postReplayWaitTime / waitInterval;
+
+      for (let i = 0; i < iterations; i++) {
+        if (this.cancelPostReplay) {
+          console.log('[POST-REPLAY] Wait cancelled, skipping script and reload\n');
+          this.cancelPostReplay = false;
+          return;
+        }
+        await this.page.waitForTimeout(waitInterval);
+      }
+
+      // Check one more time before proceeding
+      if (this.cancelPostReplay) {
+        console.log('[POST-REPLAY] Wait cancelled, skipping script and reload\n');
+        this.cancelPostReplay = false;
+        return;
+      }
+
+      console.log('[POST-REPLAY] Wait complete');
+
+      // Step 2: Run shell script if it exists
+      if (fs.existsSync(this.postReplayScript)) {
+        console.log(`[POST-REPLAY] Executing script: ${this.postReplayScript}`);
+
+        try {
+          const { stdout, stderr } = await execAsync(`bash ${this.postReplayScript}`);
+
+          if (stdout) {
+            console.log('[SCRIPT OUTPUT]');
+            console.log(stdout.trim());
+          }
+
+          if (stderr) {
+            console.log('[SCRIPT ERRORS]');
+            console.log(stderr.trim());
+          }
+
+          console.log('[POST-REPLAY] Script execution complete');
+        } catch (error) {
+          console.log(`[ERROR] Script execution failed: ${error.message}`);
+        }
+      } else {
+        console.log(`[POST-REPLAY] No script found at ${this.postReplayScript}, skipping`);
+      }
+
+      // Step 3: Restore network (disable packet loss)
+      console.log('[POST-REPLAY] Restoring network...');
+      await this.disablePacketLoss();
+
+      // Step 4: Reload the page
+      console.log('[POST-REPLAY] Reloading page...');
+      await this.page.reload();
+      console.log('[POST-REPLAY] Page reloaded\n');
+    } catch (error) {
+      console.log(`[ERROR] Post-replay sequence failed: ${error.message}`);
+    }
+  }
+
+  async enablePacketLoss() {
+    try {
+      console.log('[NETWORK] Enabling 100% packet loss...');
+
+      const client = await this.page.context().newCDPSession(this.page);
+
+      // Enable Network domain
+      await client.send('Network.enable');
+
+      // Set network conditions with 100% packet loss
+      await client.send('Network.emulateNetworkConditions', {
+        offline: false,
+        downloadThroughput: 1,  // unlimited
+        uploadThroughput: 1,    // unlimited
+        latency: 0,
+        packetLoss: 100,         // 100% packet loss
+        packetQueueLength: 0,
+        packetReordering: false
+      });
+
+      console.log('[NETWORK] 100% packet loss enabled - all network requests will fail');
+      console.log('[TIP] Press "n" to disable packet loss and restore network');
+    } catch (error) {
+      console.log(`[ERROR] Failed to enable packet loss: ${error.message}`);
+    }
+  }
+
+  async disablePacketLoss() {
+    try {
+      console.log('[NETWORK] Disabling packet loss...');
+
+      const client = await this.page.context().newCDPSession(this.page);
+
+      // Disable network emulation
+      await client.send('Network.emulateNetworkConditions', {
+        offline: false,
+        downloadThroughput: -1,
+        uploadThroughput: -1,
+        latency: 0,
+        packetLoss: 0,           // 0% packet loss (normal)
+        packetQueueLength: 0,
+        packetReordering: false
+      });
+
+      console.log('[NETWORK] Network restored to normal\n');
+    } catch (error) {
+      console.log(`[ERROR] Failed to disable packet loss: ${error.message}`);
+    }
+  }
+
+  async cleanup() {
+    console.log('\nCleaning up...');
+    if (this.context) {
+      const sessionPath = this.getSessionPath(this.currentUrl);
+      await this.context.storageState({ path: sessionPath });
+      console.log('Session saved');
+    }
+    if (this.browser) {
+      await this.browser.close();
+    }
+    console.log('Browser closed');
+  }
+}
+
+const recorder = new MouseRecorder();
+recorder.start();

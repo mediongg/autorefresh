@@ -1,0 +1,6 @@
+node_modules/
+sessions/
+recordings/
+.DS_Store
+*.log
+replay-log.txt
