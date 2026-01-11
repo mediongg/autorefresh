@@ -778,8 +778,15 @@ class MouseRecorder {
                 } catch (err) {}
               }
 
+              // Debug: Check what element page.mouse will click
+              const elementAtClick = await this.page.evaluate(({ x, y }) => {
+                const el = document.elementFromPoint(x, y);
+                return el ? { tag: el.tagName, id: el.id, class: el.className } : null;
+              }, { x: globalX, y: globalY });
+
+              console.log(`[${i + 1}/${this.recordedActions.length}] Click at frame:(${action.x}, ${action.y}) global:(${globalX}, ${globalY}) isInIframe:${action.isInIframe} element:${elementAtClick?.tag}${canvasLabel}`);
+
               // Use page.mouse.click with global coordinates - this sends real browser events
-              console.log(`[${i + 1}/${this.recordedActions.length}] Click at frame:(${action.x}, ${action.y}) global:(${globalX}, ${globalY}) isInIframe:${action.isInIframe}${canvasLabel}`);
               await this.page.mouse.click(globalX, globalY);
             } else if (action.type === 'mousedown') {
               // For drag operations, use page.mouse which uses global coordinates
