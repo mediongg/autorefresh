@@ -394,12 +394,22 @@ class MouseRecorder {
         const recordAction = (type, x, y, isDrag = false, target = null) => {
           const isCanvas = target && target.tagName === 'CANVAS';
 
+          // Calculate iframe offset if we're in an iframe
+          let offsetX = 0;
+          let offsetY = 0;
+
+          if (window.frameElement) {
+            const rect = window.frameElement.getBoundingClientRect();
+            offsetX = rect.left;
+            offsetY = rect.top;
+          }
+
           const action = {
             type,
-            x,
-            y,
-            pageX: x + window.scrollX,
-            pageY: y + window.scrollY,
+            x: x + offsetX,  // Adjust for iframe offset
+            y: y + offsetY,  // Adjust for iframe offset
+            pageX: x + offsetX + window.scrollX,
+            pageY: y + offsetY + window.scrollY,
             isDrag,
             timestamp: Date.now(),
             isCanvas
