@@ -394,28 +394,27 @@ class MouseRecorder {
         const recordAction = (type, x, y, isDrag = false, target = null) => {
           const isCanvas = target && target.tagName === 'CANVAS';
 
-          // Calculate iframe offset if we're in an iframe
-          let offsetX = 0;
-          let offsetY = 0;
+          // Store frame-relative coordinates (NOT global)
+          // Also detect if we're in an iframe
+          const isInIframe = !!window.frameElement;
 
-          if (window.frameElement) {
+          if (isInIframe) {
             const rect = window.frameElement.getBoundingClientRect();
-            offsetX = rect.left;
-            offsetY = rect.top;
-            console.log(`[RECORD] In iframe, offset: (${offsetX}, ${offsetY}), click: (${x}, ${y}), global: (${x + offsetX}, ${y + offsetY})`);
+            console.log(`[RECORD] In iframe, offset: (${rect.left}, ${rect.top}), click: (${x}, ${y})`);
           } else {
             console.log(`[RECORD] In main frame, click: (${x}, ${y})`);
           }
 
           const action = {
             type,
-            x: x + offsetX,  // Adjust for iframe offset
-            y: y + offsetY,  // Adjust for iframe offset
-            pageX: x + offsetX + window.scrollX,
-            pageY: y + offsetY + window.scrollY,
+            x,  // Store frame-relative coordinates
+            y,  // Store frame-relative coordinates
+            pageX: x + window.scrollX,
+            pageY: y + window.scrollY,
             isDrag,
             timestamp: Date.now(),
-            isCanvas
+            isCanvas,
+            isInIframe  // Remember which type of frame this came from
           };
 
           window.__mouseRecorder.actions.push(action);
@@ -738,32 +737,33 @@ class MouseRecorder {
                 console.log(`[${i + 1}/${this.recordedActions.length}] NETWORK: Disabled packet loss`);
               }
             } else if (action.type === 'click') {
-              console.log(`[DEBUG] Replaying click at stored coords: (${action.x}, ${action.y})`);
+              console.log(`[DEBUG] Replaying click at frame coords: (${action.x}, ${action.y}), isInIframe: ${action.isInIframe}`);
 
-              // Try clicking in all frames to handle iframes
+              // Only try clicking in frames that match the recorded frame type
               const frames = this.page.frames();
               let clicked = false;
 
               for (const frame of frames) {
                 try {
-                  const frameInfo = await frame.evaluate(({ globalX, globalY, isCanvas }) => {
-                    // Convert global coordinates to frame-relative coordinates
-                    let frameX = globalX;
-                    let frameY = globalY;
-                    let isIframe = false;
+                  const frameInfo = await frame.evaluate(({ frameX, frameY, isCanvas, shouldBeInIframe }) => {
+                    // Check if this frame matches the type we're looking for
+                    const isIframe = !!window.frameElement;
+
+                    // Skip if frame type doesn't match
+                    if (isIframe !== shouldBeInIframe) {
+                      return { clicked: false, isIframe, skipped: true, reason: 'frame type mismatch' };
+                    }
+
                     let offsetX = 0;
                     let offsetY = 0;
 
                     if (window.frameElement) {
                       const rect = window.frameElement.getBoundingClientRect();
-                      frameX = globalX - rect.left;
-                      frameY = globalY - rect.top;
-                      isIframe = true;
                       offsetX = rect.left;
                       offsetY = rect.top;
-                      console.log(`[REPLAY] In iframe, offset: (${rect.left}, ${rect.top}), global: (${globalX}, ${globalY}), frame: (${frameX}, ${frameY})`);
+                      console.log(`[REPLAY] In iframe, using coords: (${frameX}, ${frameY})`);
                     } else {
-                      console.log(`[REPLAY] In main frame, global: (${globalX}, ${globalY})`);
+                      console.log(`[REPLAY] In main frame, using coords: (${frameX}, ${frameY})`);
                     }
 
                     // Find element at frame-relative coordinates
@@ -798,9 +798,14 @@ class MouseRecorder {
                       return { clicked: true, isIframe, offsetX, offsetY, frameX, frameY, elementType: element.tagName };
                     }
                     return { clicked: false, isIframe, offsetX, offsetY, frameX, frameY, elementType: 'NONE' };
-                  }, { globalX: action.x, globalY: action.y, isCanvas: action.isCanvas });
+                  }, { frameX: action.x, frameY: action.y, isCanvas: action.isCanvas, shouldBeInIframe: action.isInIframe || false });
 
-                  console.log(`[DEBUG] Tried ${frameInfo.isIframe ? 'iframe' : 'main frame'}, offset: (${frameInfo.offsetX}, ${frameInfo.offsetY}), frame coords: (${frameInfo.frameX}, ${frameInfo.frameY}), element found: ${frameInfo.clicked}`);
+                  if (frameInfo.skipped) {
+                    // Skip logging for mismatched frames
+                    continue;
+                  }
+
+                  console.log(`[DEBUG] Tried ${frameInfo.isIframe ? 'iframe' : 'main frame'}, frame coords: (${frameInfo.frameX}, ${frameInfo.frameY}), element: ${frameInfo.elementType || 'NONE'}, clicked: ${frameInfo.clicked}`);
 
                   if (frameInfo.clicked) {
                     console.log(`[DEBUG] ✓ Clicked successfully!`);
@@ -817,19 +822,88 @@ class MouseRecorder {
               }
               console.log(`[${i + 1}/${this.recordedActions.length}] Click at (${action.x}, ${action.y})${canvasLabel}`);
             } else if (action.type === 'mousedown') {
-              await this.page.evaluate(({ x, y, isCanvas }) => {
-                window.__showReplayClickEffect(x, y, isCanvas);
-              }, { x: action.x, y: action.y, isCanvas: action.isCanvas });
-              await this.page.mouse.move(action.x, action.y);
+              // For drag operations, use page.mouse which uses global coordinates
+              // We need to convert frame-relative coords back to global if from iframe
+              let globalX = action.x;
+              let globalY = action.y;
+
+              if (action.isInIframe) {
+                // Find the iframe offset and add it
+                const frames = this.page.frames();
+                for (const frame of frames) {
+                  try {
+                    const offset = await frame.evaluate(() => {
+                      if (window.frameElement) {
+                        const rect = window.frameElement.getBoundingClientRect();
+                        return { x: rect.left, y: rect.top };
+                      }
+                      return null;
+                    });
+                    if (offset) {
+                      globalX = action.x + offset.x;
+                      globalY = action.y + offset.y;
+                      break;
+                    }
+                  } catch (err) {}
+                }
+              }
+
+              await this.page.mouse.move(globalX, globalY);
               await this.page.mouse.down();
               console.log(`[${i + 1}/${this.recordedActions.length}] Mouse down at (${action.x}, ${action.y})${canvasLabel}`);
             } else if (action.type === 'mousemove' && action.isDrag) {
-              await this.page.mouse.move(action.x, action.y);
+              let globalX = action.x;
+              let globalY = action.y;
+
+              if (action.isInIframe) {
+                const frames = this.page.frames();
+                for (const frame of frames) {
+                  try {
+                    const offset = await frame.evaluate(() => {
+                      if (window.frameElement) {
+                        const rect = window.frameElement.getBoundingClientRect();
+                        return { x: rect.left, y: rect.top };
+                      }
+                      return null;
+                    });
+                    if (offset) {
+                      globalX = action.x + offset.x;
+                      globalY = action.y + offset.y;
+                      break;
+                    }
+                  } catch (err) {}
+                }
+              }
+
+              await this.page.mouse.move(globalX, globalY);
               if (i % 10 === 0) {
                 console.log(`[${i + 1}/${this.recordedActions.length}] Drag to (${action.x}, ${action.y})${canvasLabel}`);
               }
             } else if (action.type === 'mouseup') {
-              await this.page.mouse.move(action.x, action.y);
+              let globalX = action.x;
+              let globalY = action.y;
+
+              if (action.isInIframe) {
+                const frames = this.page.frames();
+                for (const frame of frames) {
+                  try {
+                    const offset = await frame.evaluate(() => {
+                      if (window.frameElement) {
+                        const rect = window.frameElement.getBoundingClientRect();
+                        return { x: rect.left, y: rect.top };
+                      }
+                      return null;
+                    });
+                    if (offset) {
+                      globalX = action.x + offset.x;
+                      globalY = action.y + offset.y;
+                      break;
+                    }
+                  } catch (err) {}
+                }
+              }
+
+              await this.page.mouse.move(globalX, globalY);
               await this.page.mouse.up();
               console.log(`[${i + 1}/${this.recordedActions.length}] Mouse up at (${action.x}, ${action.y})${canvasLabel}`);
             }
