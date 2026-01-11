@@ -654,8 +654,15 @@ class MouseRecorder {
             } else if (action.type === 'click') {
               await this.page.evaluate(({ x, y, isCanvas }) => {
                 window.__showReplayClickEffect(x, y, isCanvas);
+
+                // Find element at coordinates and click it programmatically
+                const element = document.elementFromPoint(x, y);
+                if (element) {
+                  element.click();
+                } else {
+                  console.warn(`No element found at (${x}, ${y})`);
+                }
               }, { x: action.x, y: action.y, isCanvas: action.isCanvas });
-              await this.page.mouse.click(action.x, action.y);
               console.log(`[${i + 1}/${this.recordedActions.length}] Click at (${action.x}, ${action.y})${canvasLabel}`);
             } else if (action.type === 'mousedown') {
               await this.page.evaluate(({ x, y, isCanvas }) => {
