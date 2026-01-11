@@ -723,21 +723,31 @@ class MouseRecorder {
 
               for (const frame of frames) {
                 try {
-                  const wasClicked = await frame.evaluate(({ x, y, isCanvas }) => {
-                    if (window.__showReplayClickEffect) {
-                      window.__showReplayClickEffect(x, y, isCanvas);
+                  const wasClicked = await frame.evaluate(({ globalX, globalY, isCanvas }) => {
+                    // Convert global coordinates to frame-relative coordinates
+                    let frameX = globalX;
+                    let frameY = globalY;
+
+                    if (window.frameElement) {
+                      const rect = window.frameElement.getBoundingClientRect();
+                      frameX = globalX - rect.left;
+                      frameY = globalY - rect.top;
                     }
 
-                    // Find element at coordinates and click it programmatically
-                    const element = document.elementFromPoint(x, y);
+                    // Find element at frame-relative coordinates
+                    const element = document.elementFromPoint(frameX, frameY);
                     if (element) {
+                      if (window.__showReplayClickEffect) {
+                        window.__showReplayClickEffect(frameX, frameY, isCanvas);
+                      }
+
                       // Dispatch full mouse event sequence for maximum compatibility
                       const eventOptions = {
                         view: window,
                         bubbles: true,
                         cancelable: true,
-                        clientX: x,
-                        clientY: y,
+                        clientX: frameX,
+                        clientY: frameY,
                         button: 0,
                         buttons: 1
                       };
@@ -748,7 +758,7 @@ class MouseRecorder {
                       return true;
                     }
                     return false;
-                  }, { x: action.x, y: action.y, isCanvas: action.isCanvas });
+                  }, { globalX: action.x, globalY: action.y, isCanvas: action.isCanvas });
 
                   if (wasClicked) {
                     clicked = true;
