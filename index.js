@@ -398,12 +398,6 @@ class MouseRecorder {
           // Also detect if we're in an iframe
           const isInIframe = !!window.frameElement;
 
-          if (isInIframe) {
-            const rect = window.frameElement.getBoundingClientRect();
-            console.log(`[RECORD] In iframe, offset: (${rect.left}, ${rect.top}), click: (${x}, ${y}), target: ${target ? target.tagName : 'none'}`);
-          } else {
-            console.log(`[RECORD] In main frame, click: (${x}, ${y}), target: ${target ? target.tagName : 'none'}`);
-          }
 
           const action = {
             type,
@@ -559,14 +553,6 @@ class MouseRecorder {
           });
 
           if (frameActions && frameActions.length > 0) {
-            console.log(`[DEBUG] Collected ${frameActions.length} actions from a frame`);
-            // Log first action for debugging
-            if (frameActions.length > 0) {
-              const first = frameActions.find(a => a.type === 'click' || a.type === 'mousedown');
-              if (first) {
-                console.log(`[DEBUG] Sample action: type=${first.type}, x=${first.x}, y=${first.y}`);
-              }
-            }
             allActions = allActions.concat(frameActions);
           }
         } catch (err) {
@@ -578,12 +564,6 @@ class MouseRecorder {
       this.recordedActions = allActions.sort((a, b) => a.timestamp - b.timestamp);
 
       this.isRecording = false;
-
-      console.log(`[DEBUG] Total actions recorded: ${this.recordedActions.length}`);
-      // Show ALL recorded actions
-      this.recordedActions.forEach((action, idx) => {
-        console.log(`[DEBUG] Action ${idx + 1}: type=${action.type}, x=${action.x}, y=${action.y}, isInIframe=${action.isInIframe}`);
-      });
 
       if (this.recordedActions.length === 0) {
         console.log('\n[RECORDING STOPPED] - No actions captured');
@@ -755,8 +735,6 @@ class MouseRecorder {
                 console.log(`[${i + 1}/${this.recordedActions.length}] NETWORK: Disabled packet loss`);
               }
             } else if (action.type === 'click') {
-              console.log(`[DEBUG] Replaying click at frame coords: (${action.x}, ${action.y}), isInIframe: ${action.isInIframe}`);
-
               // Only try clicking in frames that match the recorded frame type
               const frames = this.page.frames();
               let clicked = false;
@@ -779,19 +757,13 @@ class MouseRecorder {
                       const rect = window.frameElement.getBoundingClientRect();
                       offsetX = rect.left;
                       offsetY = rect.top;
-                      console.log(`[REPLAY] In iframe, using coords: (${frameX}, ${frameY})`);
-                    } else {
-                      console.log(`[REPLAY] In main frame, using coords: (${frameX}, ${frameY})`);
                     }
 
                     // Find element at frame-relative coordinates
                     const element = document.elementFromPoint(frameX, frameY);
                     if (element) {
-                      console.log(`[REPLAY] Found element: ${element.tagName} at (${frameX}, ${frameY})`);
-
                       // Skip if we found an IFRAME element (we should click inside it, not on it)
                       if (element.tagName === 'IFRAME') {
-                        console.log(`[REPLAY] Skipping IFRAME element, will search inside iframe instead`);
                         return { clicked: false, isIframe, offsetX, offsetY, frameX, frameY, elementType: 'IFRAME' };
                       }
 
@@ -819,14 +791,10 @@ class MouseRecorder {
                   }, { frameX: action.x, frameY: action.y, isCanvas: action.isCanvas, shouldBeInIframe: action.isInIframe || false });
 
                   if (frameInfo.skipped) {
-                    // Skip logging for mismatched frames
                     continue;
                   }
 
-                  console.log(`[DEBUG] Tried ${frameInfo.isIframe ? 'iframe' : 'main frame'}, frame coords: (${frameInfo.frameX}, ${frameInfo.frameY}), element: ${frameInfo.elementType || 'NONE'}, clicked: ${frameInfo.clicked}`);
-
                   if (frameInfo.clicked) {
-                    console.log(`[DEBUG] ✓ Clicked successfully!`);
                     clicked = true;
                     break;
                   }
