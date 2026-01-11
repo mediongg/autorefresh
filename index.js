@@ -400,9 +400,9 @@ class MouseRecorder {
 
           if (isInIframe) {
             const rect = window.frameElement.getBoundingClientRect();
-            console.log(`[RECORD] In iframe, offset: (${rect.left}, ${rect.top}), click: (${x}, ${y})`);
+            console.log(`[RECORD] In iframe, offset: (${rect.left}, ${rect.top}), click: (${x}, ${y}), target: ${target ? target.tagName : 'none'}`);
           } else {
-            console.log(`[RECORD] In main frame, click: (${x}, ${y})`);
+            console.log(`[RECORD] In main frame, click: (${x}, ${y}), target: ${target ? target.tagName : 'none'}`);
           }
 
           const action = {
@@ -526,8 +526,27 @@ class MouseRecorder {
         if (indicator) indicator.remove();
       });
 
-      // Collect actions from all frames
+      // Remove event listeners from all frames
       const frames = this.page.frames();
+      for (const frame of frames) {
+        try {
+          await frame.evaluate(() => {
+            // Remove event listeners
+            if (window.__mouseRecorderListeners) {
+              const listeners = window.__mouseRecorderListeners;
+              document.removeEventListener('mousedown', listeners.mousedown, true);
+              document.removeEventListener('mousemove', listeners.mousemove, true);
+              document.removeEventListener('mouseup', listeners.mouseup, true);
+              document.removeEventListener('click', listeners.click, true);
+              delete window.__mouseRecorderListeners;
+            }
+          });
+        } catch (err) {
+          // Frame might be inaccessible
+        }
+      }
+
+      // Collect actions from all frames
       let allActions = [];
 
       for (const frame of frames) {
