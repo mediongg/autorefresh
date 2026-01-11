@@ -916,12 +916,40 @@ class MouseRecorder {
     try {
       console.log('[NETWORK] Enabling 100% packet loss...');
 
-      // Use context.route to intercept ALL requests (including iframes)
-      // This works at the browser context level, so it affects all frames
-      await this.context.route('**/*', route => {
-        // Abort all requests to simulate 100% packet loss
-        route.abort('failed');
+      // Apply network emulation to main page
+      const mainClient = await this.page.context().newCDPSession(this.page);
+      await mainClient.send('Network.enable');
+      await mainClient.send('Network.emulateNetworkConditions', {
+        offline: false,
+        downloadThroughput: 1,
+        uploadThroughput: 1,
+        latency: 0,
+        packetLoss: 100,
+        packetQueueLength: 0,
+        packetReordering: false
       });
+
+      // Apply network emulation to all iframes
+      const frames = this.page.frames();
+      for (const frame of frames) {
+        if (frame !== this.page.mainFrame()) {
+          try {
+            const frameClient = await this.page.context().newCDPSession(frame);
+            await frameClient.send('Network.enable');
+            await frameClient.send('Network.emulateNetworkConditions', {
+              offline: false,
+              downloadThroughput: 1,
+              uploadThroughput: 1,
+              latency: 0,
+              packetLoss: 100,
+              packetQueueLength: 0,
+              packetReordering: false
+            });
+          } catch (err) {
+            // Frame might not support CDP (cross-origin), skip it
+          }
+        }
+      }
 
       await this.page.evaluate(() => {
         const oldIndicator = document.getElementById('__packet_loss_indicator');
@@ -947,7 +975,7 @@ class MouseRecorder {
         document.body.appendChild(indicator);
       });
 
-      console.log('[NETWORK] 100% packet loss enabled - all network requests will fail (including iframes)');
+      console.log('[NETWORK] 100% packet loss enabled - all network requests will be throttled');
       console.log('[TIP] Press "n" to disable packet loss and restore network');
     } catch (error) {
       console.log(`[ERROR] Failed to enable packet loss: ${error.message}`);
@@ -958,15 +986,45 @@ class MouseRecorder {
     try {
       console.log('[NETWORK] Disabling packet loss...');
 
-      // Remove all route handlers to restore normal network
-      await this.context.unroute('**/*');
+      // Restore network for main page
+      const mainClient = await this.page.context().newCDPSession(this.page);
+      await mainClient.send('Network.emulateNetworkConditions', {
+        offline: false,
+        downloadThroughput: -1,
+        uploadThroughput: -1,
+        latency: 0,
+        packetLoss: 0,
+        packetQueueLength: 0,
+        packetReordering: false
+      });
+
+      // Restore network for all iframes
+      const frames = this.page.frames();
+      for (const frame of frames) {
+        if (frame !== this.page.mainFrame()) {
+          try {
+            const frameClient = await this.page.context().newCDPSession(frame);
+            await frameClient.send('Network.emulateNetworkConditions', {
+              offline: false,
+              downloadThroughput: -1,
+              uploadThroughput: -1,
+              latency: 0,
+              packetLoss: 0,
+              packetQueueLength: 0,
+              packetReordering: false
+            });
+          } catch (err) {
+            // Frame might not support CDP, skip it
+          }
+        }
+      }
 
       await this.page.evaluate(() => {
         const indicator = document.getElementById('__packet_loss_indicator');
         if (indicator) indicator.remove();
       });
 
-      console.log('[NETWORK] Network restored to normal (including iframes)\n');
+      console.log('[NETWORK] Network restored to normal\n');
     } catch (error) {
       console.log(`[ERROR] Failed to disable packet loss: ${error.message}`);
     }
