@@ -1,0 +1,7 @@
+{
+  "postReplayScript": "./post-replay.sh",
+  "postReplayWaitTime": 6000,
+  "postReloadWaitTime": 8000,
+
+  "_comment": "On Windows, use './post-replay.bat' or './post-replay.cmd' instead of .sh"
+}
