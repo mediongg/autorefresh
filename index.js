@@ -561,6 +561,13 @@ class MouseRecorder {
 
       this.isRecording = false;
 
+      console.log(`[DEBUG] Total actions recorded: ${this.recordedActions.length}`);
+      // Show all click actions with their coordinates
+      const clicks = this.recordedActions.filter(a => a.type === 'click');
+      clicks.forEach((click, idx) => {
+        console.log(`[DEBUG] Click ${idx + 1}: x=${click.x}, y=${click.y}`);
+      });
+
       if (this.recordedActions.length === 0) {
         console.log('\n[RECORDING STOPPED] - No actions captured');
         console.log('[TIP] Make sure you clicked or dragged on the page after pressing "s"');
