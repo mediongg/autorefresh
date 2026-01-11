@@ -21,7 +21,6 @@
   "devDependencies": {
     "pkg": "^5.8.1"
   },
-  "type": "module",
   "pkg": {
     "assets": [
       "node_modules/playwright-core/**/*",

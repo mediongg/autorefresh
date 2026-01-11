@@ -1,9 +1,9 @@
-import { chromium } from 'playwright';
-import * as readline from 'readline';
-import * as fs from 'fs';
-import * as path from 'path';
-import { exec } from 'child_process';
-import { promisify } from 'util';
+const { chromium } = require('playwright');
+const readline = require('readline');
+const fs = require('fs');
+const path = require('path');
+const { exec } = require('child_process');
+const { promisify } = require('util');
 
 const execAsync = promisify(exec);
 
@@ -1087,4 +1087,13 @@ class MouseRecorder {
 }
 
 const recorder = new MouseRecorder();
-recorder.start();
+recorder.start().catch(error => {
+  console.error('\n[FATAL ERROR]', error.message);
+  console.error('\nStack trace:', error.stack);
+  console.error('\nPress any key to exit...');
+
+  // Keep window open on error
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  process.stdin.on('data', () => process.exit(1));
+});
