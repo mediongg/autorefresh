@@ -46,6 +46,22 @@ class MouseRecorder {
     this.postReplayScript = config.postReplayScript || defaultScript;
     this.postReplayWaitTime = config.postReplayWaitTime || 6000;  // Default: 6 seconds
     this.postReloadWaitTime = config.postReloadWaitTime || 8000;  // Default: 8 seconds
+
+    // Network tracking patterns (can be single string or array of strings)
+    this.networkTrackingStartPatterns = config.networkTrackingStartPatterns || [];
+    this.networkTrackingEndPatterns = config.networkTrackingEndPatterns || [];
+    this.networkTrackingFilterPatterns = config.networkTrackingFilterPatterns || [];
+
+    // Convert to array if single string provided
+    if (typeof this.networkTrackingStartPatterns === 'string') {
+      this.networkTrackingStartPatterns = [this.networkTrackingStartPatterns];
+    }
+    if (typeof this.networkTrackingEndPatterns === 'string') {
+      this.networkTrackingEndPatterns = [this.networkTrackingEndPatterns];
+    }
+    if (typeof this.networkTrackingFilterPatterns === 'string') {
+      this.networkTrackingFilterPatterns = [this.networkTrackingFilterPatterns];
+    }
   }
 
   getSessionPath(url) {
@@ -98,13 +114,25 @@ class MouseRecorder {
   async initBrowser(url) {
     console.log('\nInitializing browser...');
 
+    const args = [
+      '--start-maximized',
+      '--disable-blink-features=AutomationControlled'
+    ];
+
+    // Add incognito mode if environment variable is set
+    if (process.env.INCOGNITO === 'true' || process.env.INCOGNITO === '1') {
+      // Note: Playwright browser contexts are already isolated (like incognito)
+      // These flags try to force visual incognito mode appearance
+      args.push('--incognito');
+      console.log('[INCOGNITO] Incognito mode requested');
+      console.log('[INFO] Note: Playwright contexts are already isolated like incognito mode');
+      console.log('[INFO] Visual appearance may not show incognito theme');
+    }
+
     const launchOptions = {
       headless: false,
       slowMo: 50,
-      args: [
-        '--start-maximized',
-        '--disable-blink-features=AutomationControlled'
-      ]
+      args
     };
 
     // Use Chrome from environment variable if provided
@@ -120,18 +148,68 @@ class MouseRecorder {
     // Context options for maximized window
     const contextOptions = {
       viewport: null, // Disable default viewport to use full window size
-      ...(fs.existsSync(sessionPath) && { storageState: sessionPath })
     };
 
+    // Load session if it exists (works even in incognito mode)
     if (fs.existsSync(sessionPath)) {
       console.log('Loading existing session...');
-      this.context = await this.browser.newContext(contextOptions);
+      contextOptions.storageState = sessionPath;
     } else {
       console.log('Creating new session...');
-      this.context = await this.browser.newContext(contextOptions);
     }
 
+    this.context = await this.browser.newContext(contextOptions);
+
     this.page = await this.context.newPage();
+
+    // Add network request logging between A and B (if configured)
+    if (this.networkTrackingStartPatterns.length > 0 || this.networkTrackingEndPatterns.length > 0) {
+      let isCapturing = false;
+      let capturedRequests = [];
+
+      const matchesAnyPattern = (url, patterns) => {
+        return patterns.some(pattern => url.includes(pattern));
+      };
+
+      this.page.on('request', request => {
+        const url = request.url();
+
+        // Check if this is a START request (A)
+        if (!isCapturing && matchesAnyPattern(url, this.networkTrackingStartPatterns)) {
+          isCapturing = true;
+          capturedRequests = [];
+          console.log(`\n[CAPTURE START] Detected A: ${url}`);
+          console.log('[TRACKING] Now logging all requests until B is detected...\n');
+        }
+
+        // If capturing, log the request (apply filter if configured)
+        if (isCapturing) {
+          // If filter patterns are configured, only log matching requests
+          // If no filter patterns, log all requests
+          const shouldLog = this.networkTrackingFilterPatterns.length === 0 ||
+                           matchesAnyPattern(url, this.networkTrackingFilterPatterns);
+
+          if (shouldLog) {
+            console.log(`[REQUEST] ${request.method()} ${url}`);
+            capturedRequests.push({ type: 'request', method: request.method(), url });
+          }
+        }
+
+        // Check if this is an END request (B)
+        if (isCapturing && matchesAnyPattern(url, this.networkTrackingEndPatterns)) {
+          console.log(`\n[CAPTURE END] Detected B: ${url}`);
+          console.log(`[SUMMARY] Captured ${capturedRequests.length} requests between A and B\n`);
+          isCapturing = false;
+        }
+      });
+
+      console.log('[NETWORK TRACKING] Enabled with patterns:');
+      console.log(`  Start (A): ${JSON.stringify(this.networkTrackingStartPatterns)}`);
+      console.log(`  End (B): ${JSON.stringify(this.networkTrackingEndPatterns)}`);
+      if (this.networkTrackingFilterPatterns.length > 0) {
+        console.log(`  Filter: ${JSON.stringify(this.networkTrackingFilterPatterns)}`);
+      }
+    }
 
     console.log(`Navigating to ${url}...`);
     await this.page.goto(url);
@@ -953,7 +1031,28 @@ class MouseRecorder {
 
       // Step 4: Reload the page
       console.log('[POST-REPLAY] Reloading page...');
-      await this.page.reload({ waitUntil: 'networkidle' });
+
+      // Wait a bit for network to stabilize after WiFi toggle
+      await this.page.waitForTimeout(2000);
+
+      // Try to reload with error handling
+      try {
+        await this.page.reload({
+          waitUntil: 'domcontentloaded',  // Less strict than 'networkidle'
+          timeout: 30000  // 30 second timeout
+        });
+      } catch (error) {
+        console.log(`[WARN] Reload failed, retrying: ${error.message}`);
+        // Wait a bit more and retry
+        await this.page.waitForTimeout(3000);
+        try {
+          await this.page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+        } catch (retryError) {
+          console.log(`[ERROR] Reload retry failed: ${retryError.message}`);
+          console.log('[INFO] You may need to manually refresh the page');
+        }
+      }
+
       await this.page.waitForTimeout(this.postReloadWaitTime);
       console.log('[POST-REPLAY] Page reloaded\n');
     } catch (error) {
@@ -1082,6 +1181,7 @@ class MouseRecorder {
   async cleanup() {
     console.log('\nCleaning up...');
     if (this.context) {
+      // Save session (even in incognito mode, so it can be reused)
       const sessionPath = this.getSessionPath(this.currentUrl);
       await this.context.storageState({ path: sessionPath });
       console.log('Session saved');

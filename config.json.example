@@ -3,5 +3,22 @@
   "postReplayWaitTime": 6000,
   "postReloadWaitTime": 8000,
 
-  "_comment": "On Windows, use './post-replay.bat' or './post-replay.cmd' instead of .sh"
+  "networkTrackingStartPatterns": [
+    "init_open_chest"
+  ],
+  "networkTrackingEndPatterns": [
+    "init_progress_bar"
+  ],
+  "networkTrackingFilterPatterns": [
+    "webgl_bundles",
+  ],
+
+  "_comment1": "On Windows, use './post-replay.bat' or './post-replay.cmd' instead of .sh",
+  "_comment2": "networkTrackingStartPatterns: Array of URL patterns to start capturing requests (A)",
+  "_comment3": "networkTrackingEndPatterns: Array of URL patterns to stop capturing requests (B)",
+  "_comment4": "networkTrackingFilterPatterns: Array of URL patterns to filter captured requests (optional)",
+  "_comment5": "If filterPatterns is empty [], logs ALL requests between A and B",
+  "_comment6": "If filterPatterns has values, only logs requests matching those patterns",
+  "_comment7": "You can also use a single string instead of an array for any pattern option",
+  "_comment8": "Leave start/end arrays empty [] to disable network tracking"
 }

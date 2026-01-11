@@ -79,7 +79,10 @@ Create a `config.json` file to customize settings (optional):
 {
   "postReplayScript": "./post-replay.sh",
   "postReplayWaitTime": 6000,
-  "postReloadWaitTime": 8000
+  "postReloadWaitTime": 8000,
+  "networkTrackingStartPatterns": ["/api/start", "/session/begin"],
+  "networkTrackingEndPatterns": ["/api/end", "/session/complete"],
+  "networkTrackingFilterPatterns": ["/api/", "/graphql"]
 }
 ```
 
@@ -90,6 +93,20 @@ Create a `config.json` file to customize settings (optional):
   - macOS/Linux: use `.sh` file (default: `./post-replay.sh`)
 - `postReplayWaitTime`: Wait time (ms) before running post-replay script (default: 6000)
 - `postReloadWaitTime`: Wait time (ms) after page reload (default: 8000)
+- `networkTrackingStartPatterns`: Array of URL patterns to start capturing network requests (optional)
+  - Can be a single string or array of strings
+  - Example: `["/api/start", "?action=init"]`
+  - When any pattern matches, starts logging all requests
+- `networkTrackingEndPatterns`: Array of URL patterns to stop capturing network requests (optional)
+  - Can be a single string or array of strings
+  - Example: `["/api/end", "/complete"]`
+  - When any pattern matches, stops logging and shows summary
+  - Leave empty `[]` to disable network tracking
+- `networkTrackingFilterPatterns`: Array of URL patterns to filter captured requests (optional)
+  - Can be a single string or array of strings
+  - Example: `["/api/", "/graphql", "?query="]`
+  - If empty `[]` or not specified, logs ALL requests between start and end
+  - If specified, only logs requests matching these patterns
 
 See `config.json.example` for reference.
 
@@ -167,6 +184,63 @@ During recording or replay, you can simulate network issues:
 7. Press `f` to finish
 
 Replay sequence: `A → B → [PACKET LOSS ON] → C → [NETWORK RESTORED]`
+
+#### Network Request Tracking
+
+Track HTTP requests that occur between two specific endpoints (A and B). Configure in `config.json`:
+
+```json
+{
+  "networkTrackingStartPatterns": ["/api/start", "/session/begin"],
+  "networkTrackingEndPatterns": ["/api/end", "/session/complete"],
+  "networkTrackingFilterPatterns": ["/api/", "/graphql"]
+}
+```
+
+**How it works:**
+1. When any URL matching a start pattern is detected → begins logging requests
+2. Only requests matching filter patterns are logged (if filter is empty, logs ALL requests)
+3. When any URL matching an end pattern is detected → stops logging and shows summary
+
+**Example output (with filter):**
+```
+[NETWORK TRACKING] Enabled with patterns:
+  Start (A): ["/api/start","/session/begin"]
+  End (B): ["/api/end","/session/complete"]
+  Filter: ["/api/","/graphql"]
+
+[CAPTURE START] Detected A: https://example.com/api/start
+[TRACKING] Now logging all requests until B is detected...
+
+[REQUEST] GET https://example.com/api/start
+[REQUEST] POST https://example.com/api/user/data
+[REQUEST] POST https://example.com/graphql
+[REQUEST] GET https://example.com/api/end
+
+[CAPTURE END] Detected B: https://example.com/api/end
+[SUMMARY] Captured 4 requests between A and B
+```
+
+In this example, requests to static files (CSS, JS, images) are filtered out. Only API and GraphQL requests are logged.
+
+**Example output (without filter - logs ALL requests):**
+```json
+{
+  "networkTrackingStartPatterns": ["/api/start"],
+  "networkTrackingEndPatterns": ["/api/end"],
+  "networkTrackingFilterPatterns": []
+}
+```
+This will log every single request (including CSS, JS, images, fonts, etc.) between start and end.
+
+**Use cases:**
+- Debug API call sequences during user interactions
+- Monitor specific requests during workflows (filter out noise)
+- Analyze network traffic between transaction start/end
+- Identify missing or duplicate API calls
+- Track only GraphQL/API requests, ignore static assets
+
+Set both start/end arrays to `[]` in config to disable network tracking.
 
 #### Post-Replay Script
 
