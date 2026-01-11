@@ -283,8 +283,33 @@ class MouseRecorder {
     console.log('[INFO] Canvas-aware recording active - click and drag on the page');
 
     try {
-      // Initialize shared recorder storage in main page
+      // Add visual recording indicator only to main page
       await this.page.evaluate(() => {
+        // Remove old recording indicator
+        const oldIndicator = document.getElementById('__mouse_recorder_indicator');
+        if (oldIndicator) oldIndicator.remove();
+
+        const indicator = document.createElement('div');
+        indicator.id = '__mouse_recorder_indicator';
+        indicator.textContent = '🔴 RECORDING';
+        indicator.style.cssText = `
+          position: fixed;
+          top: 10px;
+          right: 10px;
+          background: red;
+          color: white;
+          padding: 8px 16px;
+          border-radius: 4px;
+          font-family: monospace;
+          font-size: 14px;
+          font-weight: bold;
+          z-index: 999999;
+          pointer-events: none;
+          box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        `;
+        document.body.appendChild(indicator);
+
+        // Initialize shared recorder storage
         if (!window.__mouseRecorder) {
           window.__mouseRecorder = {
             actions: [],
@@ -304,40 +329,13 @@ class MouseRecorder {
       for (const frame of frames) {
         try {
           await frame.evaluate(() => {
-        // Clean up old listeners and indicators if they exist
+        // Clean up old listeners if they exist
         if (window.__mouseRecorderListeners) {
           const listeners = window.__mouseRecorderListeners;
           document.removeEventListener('mousedown', listeners.mousedown, true);
           document.removeEventListener('mousemove', listeners.mousemove, true);
           document.removeEventListener('mouseup', listeners.mouseup, true);
           document.removeEventListener('click', listeners.click, true);
-        }
-
-        // Remove old recording indicator
-        const oldIndicator = document.getElementById('__mouse_recorder_indicator');
-        if (oldIndicator) oldIndicator.remove();
-
-        // Add visual recording indicator (to each frame so it's visible in iframes too)
-        const indicator = document.createElement('div');
-        indicator.id = '__mouse_recorder_indicator';
-        indicator.textContent = '🔴 RECORDING';
-        indicator.style.cssText = `
-          position: fixed;
-          top: 10px;
-          right: 10px;
-          background: red;
-          color: white;
-          padding: 8px 16px;
-          border-radius: 4px;
-          font-family: monospace;
-          font-size: 14px;
-          font-weight: bold;
-          z-index: 999999;
-          pointer-events: none;
-          box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-        `;
-        if (document.body) {
-          document.body.appendChild(indicator);
         }
 
         // Initialize recorder state
@@ -507,6 +505,12 @@ class MouseRecorder {
     }
 
     try {
+      // Remove visual indicator from main page
+      await this.page.evaluate(() => {
+        const indicator = document.getElementById('__mouse_recorder_indicator');
+        if (indicator) indicator.remove();
+      });
+
       // Collect actions from all frames
       const frames = this.page.frames();
       let allActions = [];
@@ -514,10 +518,6 @@ class MouseRecorder {
       for (const frame of frames) {
         try {
           const frameActions = await frame.evaluate(() => {
-            // Remove visual indicator
-            const indicator = document.getElementById('__mouse_recorder_indicator');
-            if (indicator) indicator.remove();
-
             if (!window.__mouseRecorder || !window.__mouseRecorder.actions) {
               return [];
             }
