@@ -543,34 +543,37 @@ class MouseRecorder {
         }
       }
 
+      // First, get iframe offsets from the main page (works for cross-origin iframes)
+      const iframeOffsets = await this.page.evaluate(() => {
+        const offsets = [{ x: 0, y: 0 }]; // Main frame has no offset
+        const iframes = document.querySelectorAll('iframe');
+        iframes.forEach(iframe => {
+          const rect = iframe.getBoundingClientRect();
+          offsets.push({ x: rect.left, y: rect.top });
+        });
+        return offsets;
+      });
+
       // Collect actions from all frames and tag them with frame info
       let allActions = [];
 
       for (let frameIndex = 0; frameIndex < frames.length; frameIndex++) {
         const frame = frames[frameIndex];
         try {
-          const frameInfo = await frame.evaluate(() => {
+          const frameActions = await frame.evaluate(() => {
             if (!window.__mouseRecorder || !window.__mouseRecorder.actions) {
-              return { actions: [], offset: { x: 0, y: 0 } };
+              return [];
             }
-
-            // Get iframe offset if in iframe
-            let offset = { x: 0, y: 0 };
-            if (window.frameElement) {
-              const rect = window.frameElement.getBoundingClientRect();
-              offset = { x: rect.left, y: rect.top };
-            }
-
-            return { actions: window.__mouseRecorder.actions, offset };
+            return window.__mouseRecorder.actions;
           });
 
-          if (frameInfo.actions && frameInfo.actions.length > 0) {
+          if (frameActions && frameActions.length > 0) {
             // Tag each action with which frame it came from and the offset
-            frameInfo.actions.forEach(action => {
+            frameActions.forEach(action => {
               action.frameIndex = frameIndex;
-              action.frameOffset = frameInfo.offset;
+              action.frameOffset = iframeOffsets[frameIndex] || { x: 0, y: 0 };
             });
-            allActions = allActions.concat(frameInfo.actions);
+            allActions = allActions.concat(frameActions);
           }
         } catch (err) {
           // Frame might be inaccessible, skip it
