@@ -398,6 +398,9 @@ class MouseRecorder {
           // Also detect if we're in an iframe
           const isInIframe = !!window.frameElement;
 
+          if (type === 'click') {
+            console.log(`[RECORD] type=${type}, coords=(${x},${y}), isInIframe=${isInIframe}, hasFrameElement=${!!window.frameElement}, target=${target?.tagName}`);
+          }
 
           const action = {
             type,
