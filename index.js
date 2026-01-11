@@ -192,6 +192,12 @@ class MouseRecorder {
           if (shouldLog) {
             console.log(`[REQUEST] ${request.method()} ${url}`);
             capturedRequests.push({ type: 'request', method: request.method(), url });
+
+            // Cancel post-replay sequence if filtered request is detected
+            if (this.networkTrackingFilterPatterns.length > 0 && matchesAnyPattern(url, this.networkTrackingFilterPatterns)) {
+              this.cancelPostReplay = true;
+              console.log(`[CANCEL] Post-replay sequence cancelled due to matching request: ${url}`);
+            }
           }
         }
 
