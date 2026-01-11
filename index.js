@@ -907,7 +907,9 @@ class MouseRecorder {
 
       // Step 2: Run shell script if it exists
       if (fs.existsSync(this.postReplayScript)) {
-        console.log(`[POST-REPLAY] Executing script: ${this.postReplayScript}`);
+        // Convert to absolute path (Windows doesn't like './')
+        const absoluteScriptPath = path.resolve(this.postReplayScript);
+        console.log(`[POST-REPLAY] Executing script: ${absoluteScriptPath}`);
 
         try {
           // Determine the appropriate shell command based on platform
@@ -915,10 +917,10 @@ class MouseRecorder {
           if (process.platform === 'win32') {
             // Windows: use cmd.exe to execute .bat or .cmd files
             // Quote the path in case it contains spaces
-            command = `cmd /c "${this.postReplayScript}"`;
+            command = `cmd /c "${absoluteScriptPath}"`;
           } else {
             // Unix/Linux/macOS: use bash for .sh files
-            command = `bash "${this.postReplayScript}"`;
+            command = `bash "${absoluteScriptPath}"`;
           }
 
           const { stdout, stderr } = await execAsync(command);
