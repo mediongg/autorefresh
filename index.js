@@ -543,20 +543,34 @@ class MouseRecorder {
         }
       }
 
-      // Collect actions from all frames
+      // Collect actions from all frames and tag them with frame info
       let allActions = [];
 
-      for (const frame of frames) {
+      for (let frameIndex = 0; frameIndex < frames.length; frameIndex++) {
+        const frame = frames[frameIndex];
         try {
-          const frameActions = await frame.evaluate(() => {
+          const frameInfo = await frame.evaluate(() => {
             if (!window.__mouseRecorder || !window.__mouseRecorder.actions) {
-              return [];
+              return { actions: [], offset: { x: 0, y: 0 } };
             }
-            return window.__mouseRecorder.actions;
+
+            // Get iframe offset if in iframe
+            let offset = { x: 0, y: 0 };
+            if (window.frameElement) {
+              const rect = window.frameElement.getBoundingClientRect();
+              offset = { x: rect.left, y: rect.top };
+            }
+
+            return { actions: window.__mouseRecorder.actions, offset };
           });
 
-          if (frameActions && frameActions.length > 0) {
-            allActions = allActions.concat(frameActions);
+          if (frameInfo.actions && frameInfo.actions.length > 0) {
+            // Tag each action with which frame it came from and the offset
+            frameInfo.actions.forEach(action => {
+              action.frameIndex = frameIndex;
+              action.frameOffset = frameInfo.offset;
+            });
+            allActions = allActions.concat(frameInfo.actions);
           }
         } catch (err) {
           // Frame might be inaccessible, skip it
@@ -738,43 +752,24 @@ class MouseRecorder {
                 console.log(`[${i + 1}/${this.recordedActions.length}] NETWORK: Disabled packet loss`);
               }
             } else if (action.type === 'click') {
-              // Calculate global coordinates for page.mouse.click()
+              // Calculate global coordinates using stored frame offset
               let globalX = action.x;
               let globalY = action.y;
 
-              if (action.isInIframe) {
-                // Find the iframe offset and add it
-                const frames = this.page.frames();
-                for (const frame of frames) {
-                  try {
-                    const offset = await frame.evaluate(() => {
-                      if (window.frameElement) {
-                        const rect = window.frameElement.getBoundingClientRect();
-                        return { x: rect.left, y: rect.top };
-                      }
-                      return null;
-                    });
-                    if (offset) {
-                      globalX = action.x + offset.x;
-                      globalY = action.y + offset.y;
-                      break;
-                    }
-                  } catch (err) {}
-                }
+              if (action.frameOffset) {
+                globalX = action.x + action.frameOffset.x;
+                globalY = action.y + action.frameOffset.y;
               }
 
-              // Show visual effect
+              // Show visual effect in the frame where the action was recorded
               const frames = this.page.frames();
-              for (const frame of frames) {
+              if (action.frameIndex !== undefined && frames[action.frameIndex]) {
                 try {
-                  await frame.evaluate(({ frameX, frameY, isCanvas, shouldBeInIframe }) => {
-                    const isIframe = !!window.frameElement;
-                    if (isIframe === shouldBeInIframe) {
-                      if (window.__showReplayClickEffect) {
-                        window.__showReplayClickEffect(frameX, frameY, isCanvas);
-                      }
+                  await frames[action.frameIndex].evaluate(({ frameX, frameY, isCanvas }) => {
+                    if (window.__showReplayClickEffect) {
+                      window.__showReplayClickEffect(frameX, frameY, isCanvas);
                     }
-                  }, { frameX: action.x, frameY: action.y, isCanvas: action.isCanvas, shouldBeInIframe: action.isInIframe || false });
+                  }, { frameX: action.x, frameY: action.y, isCanvas: action.isCanvas });
                 } catch (err) {}
               }
 
@@ -789,30 +784,13 @@ class MouseRecorder {
               // Use page.mouse.click with global coordinates - this sends real browser events
               await this.page.mouse.click(globalX, globalY);
             } else if (action.type === 'mousedown') {
-              // For drag operations, use page.mouse which uses global coordinates
-              // We need to convert frame-relative coords back to global if from iframe
+              // Calculate global coordinates using stored frame offset
               let globalX = action.x;
               let globalY = action.y;
 
-              if (action.isInIframe) {
-                // Find the iframe offset and add it
-                const frames = this.page.frames();
-                for (const frame of frames) {
-                  try {
-                    const offset = await frame.evaluate(() => {
-                      if (window.frameElement) {
-                        const rect = window.frameElement.getBoundingClientRect();
-                        return { x: rect.left, y: rect.top };
-                      }
-                      return null;
-                    });
-                    if (offset) {
-                      globalX = action.x + offset.x;
-                      globalY = action.y + offset.y;
-                      break;
-                    }
-                  } catch (err) {}
-                }
+              if (action.frameOffset) {
+                globalX = action.x + action.frameOffset.x;
+                globalY = action.y + action.frameOffset.y;
               }
 
               await this.page.mouse.move(globalX, globalY);
@@ -822,24 +800,9 @@ class MouseRecorder {
               let globalX = action.x;
               let globalY = action.y;
 
-              if (action.isInIframe) {
-                const frames = this.page.frames();
-                for (const frame of frames) {
-                  try {
-                    const offset = await frame.evaluate(() => {
-                      if (window.frameElement) {
-                        const rect = window.frameElement.getBoundingClientRect();
-                        return { x: rect.left, y: rect.top };
-                      }
-                      return null;
-                    });
-                    if (offset) {
-                      globalX = action.x + offset.x;
-                      globalY = action.y + offset.y;
-                      break;
-                    }
-                  } catch (err) {}
-                }
+              if (action.frameOffset) {
+                globalX = action.x + action.frameOffset.x;
+                globalY = action.y + action.frameOffset.y;
               }
 
               await this.page.mouse.move(globalX, globalY);
@@ -850,24 +813,9 @@ class MouseRecorder {
               let globalX = action.x;
               let globalY = action.y;
 
-              if (action.isInIframe) {
-                const frames = this.page.frames();
-                for (const frame of frames) {
-                  try {
-                    const offset = await frame.evaluate(() => {
-                      if (window.frameElement) {
-                        const rect = window.frameElement.getBoundingClientRect();
-                        return { x: rect.left, y: rect.top };
-                      }
-                      return null;
-                    });
-                    if (offset) {
-                      globalX = action.x + offset.x;
-                      globalY = action.y + offset.y;
-                      break;
-                    }
-                  } catch (err) {}
-                }
+              if (action.frameOffset) {
+                globalX = action.x + action.frameOffset.x;
+                globalY = action.y + action.frameOffset.y;
               }
 
               await this.page.mouse.move(globalX, globalY);
