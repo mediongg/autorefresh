@@ -771,6 +771,12 @@ class MouseRecorder {
                     if (element) {
                       console.log(`[REPLAY] Found element: ${element.tagName} at (${frameX}, ${frameY})`);
 
+                      // Skip if we found an IFRAME element (we should click inside it, not on it)
+                      if (element.tagName === 'IFRAME') {
+                        console.log(`[REPLAY] Skipping IFRAME element, will search inside iframe instead`);
+                        return { clicked: false, isIframe, offsetX, offsetY, frameX, frameY, elementType: 'IFRAME' };
+                      }
+
                       if (window.__showReplayClickEffect) {
                         window.__showReplayClickEffect(frameX, frameY, isCanvas);
                       }
@@ -789,13 +795,15 @@ class MouseRecorder {
                       element.dispatchEvent(new MouseEvent('mousedown', eventOptions));
                       element.dispatchEvent(new MouseEvent('mouseup', eventOptions));
                       element.dispatchEvent(new MouseEvent('click', eventOptions));
-                      return { clicked: true, isIframe, offsetX, offsetY, frameX, frameY };
+                      return { clicked: true, isIframe, offsetX, offsetY, frameX, frameY, elementType: element.tagName };
                     }
-                    return { clicked: false, isIframe, offsetX, offsetY, frameX, frameY };
+                    return { clicked: false, isIframe, offsetX, offsetY, frameX, frameY, elementType: 'NONE' };
                   }, { globalX: action.x, globalY: action.y, isCanvas: action.isCanvas });
 
+                  console.log(`[DEBUG] Tried ${frameInfo.isIframe ? 'iframe' : 'main frame'}, offset: (${frameInfo.offsetX}, ${frameInfo.offsetY}), frame coords: (${frameInfo.frameX}, ${frameInfo.frameY}), element found: ${frameInfo.clicked}`);
+
                   if (frameInfo.clicked) {
-                    console.log(`[DEBUG] Clicked in ${frameInfo.isIframe ? 'iframe' : 'main frame'}, offset: (${frameInfo.offsetX}, ${frameInfo.offsetY}), final coords: (${frameInfo.frameX}, ${frameInfo.frameY})`);
+                    console.log(`[DEBUG] ✓ Clicked successfully!`);
                     clicked = true;
                     break;
                   }
