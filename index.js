@@ -927,12 +927,16 @@ class MouseRecorder {
 
           if (stdout) {
             console.log('[SCRIPT OUTPUT]');
-            console.log(stdout.trim());
+            // Handle both string and buffer
+            const output = typeof stdout === 'string' ? stdout : stdout.toString();
+            console.log(output.trim());
           }
 
           if (stderr) {
             console.log('[SCRIPT ERRORS]');
-            console.log(stderr.trim());
+            // Handle both string and buffer
+            const errors = typeof stderr === 'string' ? stderr : stderr.toString();
+            console.log(errors.trim());
           }
 
           console.log('[POST-REPLAY] Script execution complete');
