@@ -434,20 +434,23 @@ class MouseRecorder {
         // Define event listeners - use capture phase to catch canvas events
         const listeners = {
           mousedown: (e) => {
-            window.__mouseRecorder.isMouseDown = true;
-            window.__mouseRecorder.startX = e.clientX;
-            window.__mouseRecorder.startY = e.clientY;
-            window.__mouseRecorder.scrollX = window.scrollX;
-            window.__mouseRecorder.scrollY = window.scrollY;
-            recordAction('mousedown', e.clientX, e.clientY, false, e.target);
+            // Only record if the target is in THIS frame (not a child iframe)
+            if (e.target.ownerDocument === document) {
+              window.__mouseRecorder.isMouseDown = true;
+              window.__mouseRecorder.startX = e.clientX;
+              window.__mouseRecorder.startY = e.clientY;
+              window.__mouseRecorder.scrollX = window.scrollX;
+              window.__mouseRecorder.scrollY = window.scrollY;
+              recordAction('mousedown', e.clientX, e.clientY, false, e.target);
+            }
           },
           mousemove: (e) => {
-            if (window.__mouseRecorder.isMouseDown) {
+            if (window.__mouseRecorder.isMouseDown && e.target.ownerDocument === document) {
               recordAction('mousemove', e.clientX, e.clientY, true, e.target);
             }
           },
           mouseup: (e) => {
-            if (window.__mouseRecorder.isMouseDown) {
+            if (window.__mouseRecorder.isMouseDown && e.target.ownerDocument === document) {
               const isDrag = Math.abs(e.clientX - window.__mouseRecorder.startX) > 5 ||
                             Math.abs(e.clientY - window.__mouseRecorder.startY) > 5;
 
@@ -456,8 +459,8 @@ class MouseRecorder {
             }
           },
           click: (e) => {
-            // Only record standalone clicks (not part of drag operations)
-            if (!window.__mouseRecorder.isMouseDown) {
+            // Only record if target is in THIS frame and not part of drag
+            if (e.target.ownerDocument === document && !window.__mouseRecorder.isMouseDown) {
               recordAction('click', e.clientX, e.clientY, false, e.target);
             }
           }
