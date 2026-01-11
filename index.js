@@ -916,20 +916,11 @@ class MouseRecorder {
     try {
       console.log('[NETWORK] Enabling 100% packet loss...');
 
-      const client = await this.page.context().newCDPSession(this.page);
-
-      // Enable Network domain
-      await client.send('Network.enable');
-
-      // Set network conditions with 100% packet loss
-      await client.send('Network.emulateNetworkConditions', {
-        offline: false,
-        downloadThroughput: 1,  // unlimited
-        uploadThroughput: 1,    // unlimited
-        latency: 0,
-        packetLoss: 100,         // 100% packet loss
-        packetQueueLength: 0,
-        packetReordering: false
+      // Use context.route to intercept ALL requests (including iframes)
+      // This works at the browser context level, so it affects all frames
+      await this.context.route('**/*', route => {
+        // Abort all requests to simulate 100% packet loss
+        route.abort('failed');
       });
 
       await this.page.evaluate(() => {
@@ -956,7 +947,7 @@ class MouseRecorder {
         document.body.appendChild(indicator);
       });
 
-      console.log('[NETWORK] 100% packet loss enabled - all network requests will fail');
+      console.log('[NETWORK] 100% packet loss enabled - all network requests will fail (including iframes)');
       console.log('[TIP] Press "n" to disable packet loss and restore network');
     } catch (error) {
       console.log(`[ERROR] Failed to enable packet loss: ${error.message}`);
@@ -967,25 +958,15 @@ class MouseRecorder {
     try {
       console.log('[NETWORK] Disabling packet loss...');
 
-      const client = await this.page.context().newCDPSession(this.page);
-
-      // Disable network emulation
-      await client.send('Network.emulateNetworkConditions', {
-        offline: false,
-        downloadThroughput: -1,
-        uploadThroughput: -1,
-        latency: 0,
-        packetLoss: 0,           // 0% packet loss (normal)
-        packetQueueLength: 0,
-        packetReordering: false
-      });
+      // Remove all route handlers to restore normal network
+      await this.context.unroute('**/*');
 
       await this.page.evaluate(() => {
         const indicator = document.getElementById('__packet_loss_indicator');
         if (indicator) indicator.remove();
       });
 
-      console.log('[NETWORK] Network restored to normal\n');
+      console.log('[NETWORK] Network restored to normal (including iframes)\n');
     } catch (error) {
       console.log(`[ERROR] Failed to disable packet loss: ${error.message}`);
     }
