@@ -782,7 +782,7 @@ class MouseRecorder {
                 return el ? { tag: el.tagName, id: el.id, class: el.className } : null;
               }, { x: globalX, y: globalY });
 
-              console.log(`[${i + 1}/${this.recordedActions.length}] Click at frame:(${action.x}, ${action.y}) global:(${globalX}, ${globalY}) isInIframe:${action.isInIframe} element:${elementAtClick?.tag}${canvasLabel}`);
+              console.log(`[${i + 1}/${this.recordedActions.length}] Click at frame:(${action.x}, ${action.y}) global:(${globalX}, ${globalY}) frameIndex:${action.frameIndex} offset:(${action.frameOffset?.x || 0}, ${action.frameOffset?.y || 0}) element:${elementAtClick?.tag}${canvasLabel}`);
 
               // Use page.mouse.click with global coordinates - this sends real browser events
               await this.page.mouse.click(globalX, globalY);
