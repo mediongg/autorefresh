@@ -402,6 +402,9 @@ class MouseRecorder {
             const rect = window.frameElement.getBoundingClientRect();
             offsetX = rect.left;
             offsetY = rect.top;
+            console.log(`[RECORD] In iframe, offset: (${offsetX}, ${offsetY}), click: (${x}, ${y}), global: (${x + offsetX}, ${y + offsetY})`);
+          } else {
+            console.log(`[RECORD] In main frame, click: (${x}, ${y})`);
           }
 
           const action = {
@@ -732,11 +735,16 @@ class MouseRecorder {
                       const rect = window.frameElement.getBoundingClientRect();
                       frameX = globalX - rect.left;
                       frameY = globalY - rect.top;
+                      console.log(`[REPLAY] In iframe, offset: (${rect.left}, ${rect.top}), global: (${globalX}, ${globalY}), frame: (${frameX}, ${frameY})`);
+                    } else {
+                      console.log(`[REPLAY] In main frame, global: (${globalX}, ${globalY})`);
                     }
 
                     // Find element at frame-relative coordinates
                     const element = document.elementFromPoint(frameX, frameY);
                     if (element) {
+                      console.log(`[REPLAY] Found element: ${element.tagName} at (${frameX}, ${frameY})`);
+
                       if (window.__showReplayClickEffect) {
                         window.__showReplayClickEffect(frameX, frameY, isCanvas);
                       }
