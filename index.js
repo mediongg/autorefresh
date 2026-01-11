@@ -17,11 +17,35 @@ class MouseRecorder {
     this.currentUrl = null;
     this.sessionDir = './sessions';
     this.recordingsDir = './recordings';
-    this.postReplayScript = './post-replay.sh';  // Default script path
-    this.postReplayWaitTime = 6000;  // 10 seconds in milliseconds
+
+    // Load config from file or use defaults
+    this.loadConfig();
+
     this.cancelPostReplay = false;  // Flag to cancel post-replay sequence
     this.inputMode = 'normal';
     this.inputBuffer = '';
+  }
+
+  loadConfig() {
+    const configPath = './config.json';
+    let config = {};
+
+    // Try to load config file
+    if (fs.existsSync(configPath)) {
+      try {
+        const configData = fs.readFileSync(configPath, 'utf8');
+        config = JSON.parse(configData);
+        console.log('[CONFIG] Loaded configuration from config.json');
+      } catch (error) {
+        console.log(`[CONFIG] Error reading config.json, using defaults: ${error.message}`);
+      }
+    }
+
+    // Set values with fallback to platform-specific defaults
+    const defaultScript = process.platform === 'win32' ? './post-replay.bat' : './post-replay.sh';
+    this.postReplayScript = config.postReplayScript || defaultScript;
+    this.postReplayWaitTime = config.postReplayWaitTime || 6000;  // Default: 6 seconds
+    this.postReloadWaitTime = config.postReloadWaitTime || 8000;  // Default: 8 seconds
   }
 
   getSessionPath(url) {
@@ -878,7 +902,17 @@ class MouseRecorder {
         console.log(`[POST-REPLAY] Executing script: ${this.postReplayScript}`);
 
         try {
-          const { stdout, stderr } = await execAsync(`bash ${this.postReplayScript}`);
+          // Determine the appropriate shell command based on platform
+          let command;
+          if (process.platform === 'win32') {
+            // Windows: execute .bat or .cmd files directly
+            command = this.postReplayScript;
+          } else {
+            // Unix/Linux/macOS: use bash for .sh files
+            command = `bash ${this.postReplayScript}`;
+          }
+
+          const { stdout, stderr } = await execAsync(command);
 
           if (stdout) {
             console.log('[SCRIPT OUTPUT]');
@@ -905,7 +939,7 @@ class MouseRecorder {
       // Step 4: Reload the page
       console.log('[POST-REPLAY] Reloading page...');
       await this.page.reload({ waitUntil: 'networkidle' });
-      await this.page.waitForTimeout(8000);
+      await this.page.waitForTimeout(this.postReloadWaitTime);
       console.log('[POST-REPLAY] Page reloaded\n');
     } catch (error) {
       console.log(`[ERROR] Post-replay sequence failed: ${error.message}`);
