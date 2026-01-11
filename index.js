@@ -98,14 +98,22 @@ class MouseRecorder {
   async initBrowser(url) {
     console.log('\nInitializing browser...');
 
-    this.browser = await chromium.launch({
+    const launchOptions = {
       headless: false,
       slowMo: 50,
       args: [
         '--start-maximized',
         '--disable-blink-features=AutomationControlled'
       ]
-    });
+    };
+
+    // Use Chrome from environment variable if provided
+    if (process.env.CHROME_PATH) {
+      launchOptions.executablePath = process.env.CHROME_PATH;
+      console.log(`Using Chrome from CHROME_PATH: ${process.env.CHROME_PATH}`);
+    }
+
+    this.browser = await chromium.launch(launchOptions);
 
     const sessionPath = this.getSessionPath(url);
 
