@@ -735,77 +735,48 @@ class MouseRecorder {
                 console.log(`[${i + 1}/${this.recordedActions.length}] NETWORK: Disabled packet loss`);
               }
             } else if (action.type === 'click') {
-              // Only try clicking in frames that match the recorded frame type
-              const frames = this.page.frames();
-              let clicked = false;
+              // Calculate global coordinates for page.mouse.click()
+              let globalX = action.x;
+              let globalY = action.y;
 
-              for (const frame of frames) {
-                try {
-                  const frameInfo = await frame.evaluate(({ frameX, frameY, isCanvas, shouldBeInIframe }) => {
-                    // Check if this frame matches the type we're looking for
-                    const isIframe = !!window.frameElement;
-
-                    // Skip if frame type doesn't match
-                    if (isIframe !== shouldBeInIframe) {
-                      return { clicked: false, isIframe, skipped: true, reason: 'frame type mismatch' };
-                    }
-
-                    let offsetX = 0;
-                    let offsetY = 0;
-
-                    if (window.frameElement) {
-                      const rect = window.frameElement.getBoundingClientRect();
-                      offsetX = rect.left;
-                      offsetY = rect.top;
-                    }
-
-                    // Find element at frame-relative coordinates
-                    const element = document.elementFromPoint(frameX, frameY);
-                    if (element) {
-                      // Skip if we found an IFRAME element (we should click inside it, not on it)
-                      if (element.tagName === 'IFRAME') {
-                        return { clicked: false, isIframe, offsetX, offsetY, frameX, frameY, elementType: 'IFRAME' };
+              if (action.isInIframe) {
+                // Find the iframe offset and add it
+                const frames = this.page.frames();
+                for (const frame of frames) {
+                  try {
+                    const offset = await frame.evaluate(() => {
+                      if (window.frameElement) {
+                        const rect = window.frameElement.getBoundingClientRect();
+                        return { x: rect.left, y: rect.top };
                       }
-
-                      if (window.__showReplayClickEffect) {
-                        window.__showReplayClickEffect(frameX, frameY, isCanvas);
-                      }
-
-                      // Dispatch full mouse event sequence for maximum compatibility
-                      const eventOptions = {
-                        view: window,
-                        bubbles: true,
-                        cancelable: true,
-                        clientX: frameX,
-                        clientY: frameY,
-                        button: 0,
-                        buttons: 1
-                      };
-
-                      element.dispatchEvent(new MouseEvent('mousedown', eventOptions));
-                      element.dispatchEvent(new MouseEvent('mouseup', eventOptions));
-                      element.dispatchEvent(new MouseEvent('click', eventOptions));
-                      return { clicked: true, isIframe, offsetX, offsetY, frameX, frameY, elementType: element.tagName };
+                      return null;
+                    });
+                    if (offset) {
+                      globalX = action.x + offset.x;
+                      globalY = action.y + offset.y;
+                      break;
                     }
-                    return { clicked: false, isIframe, offsetX, offsetY, frameX, frameY, elementType: 'NONE' };
-                  }, { frameX: action.x, frameY: action.y, isCanvas: action.isCanvas, shouldBeInIframe: action.isInIframe || false });
-
-                  if (frameInfo.skipped) {
-                    continue;
-                  }
-
-                  if (frameInfo.clicked) {
-                    clicked = true;
-                    break;
-                  }
-                } catch (err) {
-                  // Frame might be inaccessible, try next frame
+                  } catch (err) {}
                 }
               }
 
-              if (!clicked) {
-                console.warn(`[WARN] No element found at (${action.x}, ${action.y}) in any frame`);
+              // Show visual effect
+              const frames = this.page.frames();
+              for (const frame of frames) {
+                try {
+                  await frame.evaluate(({ frameX, frameY, isCanvas, shouldBeInIframe }) => {
+                    const isIframe = !!window.frameElement;
+                    if (isIframe === shouldBeInIframe) {
+                      if (window.__showReplayClickEffect) {
+                        window.__showReplayClickEffect(frameX, frameY, isCanvas);
+                      }
+                    }
+                  }, { frameX: action.x, frameY: action.y, isCanvas: action.isCanvas, shouldBeInIframe: action.isInIframe || false });
+                } catch (err) {}
               }
+
+              // Use page.mouse.click with global coordinates - this sends real browser events
+              await this.page.mouse.click(globalX, globalY);
               console.log(`[${i + 1}/${this.recordedActions.length}] Click at (${action.x}, ${action.y})${canvasLabel}`);
             } else if (action.type === 'mousedown') {
               // For drag operations, use page.mouse which uses global coordinates
