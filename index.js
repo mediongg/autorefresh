@@ -913,11 +913,12 @@ class MouseRecorder {
           // Determine the appropriate shell command based on platform
           let command;
           if (process.platform === 'win32') {
-            // Windows: execute .bat or .cmd files directly
-            command = this.postReplayScript;
+            // Windows: use cmd.exe to execute .bat or .cmd files
+            // Quote the path in case it contains spaces
+            command = `cmd /c "${this.postReplayScript}"`;
           } else {
             // Unix/Linux/macOS: use bash for .sh files
-            command = `bash ${this.postReplayScript}`;
+            command = `bash "${this.postReplayScript}"`;
           }
 
           const { stdout, stderr } = await execAsync(command);
