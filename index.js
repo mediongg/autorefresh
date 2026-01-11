@@ -283,7 +283,27 @@ class MouseRecorder {
     console.log('[INFO] Canvas-aware recording active - click and drag on the page');
 
     try {
+      // Initialize shared recorder storage in main page
       await this.page.evaluate(() => {
+        if (!window.__mouseRecorder) {
+          window.__mouseRecorder = {
+            actions: [],
+            isMouseDown: false,
+            startX: 0,
+            startY: 0,
+            scrollX: 0,
+            scrollY: 0
+          };
+        }
+      });
+
+      // Inject recording code into main page and all iframes
+      const frames = this.page.frames();
+      console.log(`[INFO] Found ${frames.length} frame(s) - injecting listeners into all frames`);
+
+      for (const frame of frames) {
+        try {
+          await frame.evaluate(() => {
         // Clean up old listeners and indicators if they exist
         if (window.__mouseRecorderListeners) {
           const listeners = window.__mouseRecorderListeners;
@@ -297,7 +317,7 @@ class MouseRecorder {
         const oldIndicator = document.getElementById('__mouse_recorder_indicator');
         if (oldIndicator) oldIndicator.remove();
 
-        // Add visual recording indicator
+        // Add visual recording indicator (to each frame so it's visible in iframes too)
         const indicator = document.createElement('div');
         indicator.id = '__mouse_recorder_indicator';
         indicator.textContent = '🔴 RECORDING';
@@ -316,7 +336,9 @@ class MouseRecorder {
           pointer-events: none;
           box-shadow: 0 2px 8px rgba(0,0,0,0.3);
         `;
-        document.body.appendChild(indicator);
+        if (document.body) {
+          document.body.appendChild(indicator);
+        }
 
         // Initialize recorder state
         window.__mouseRecorder = {
@@ -438,9 +460,13 @@ class MouseRecorder {
         document.addEventListener('mousemove', listeners.mousemove, true);
         document.addEventListener('mouseup', listeners.mouseup, true);
         document.addEventListener('click', listeners.click, true);
-      });
+          });
+        } catch (err) {
+          console.log(`[WARN] Could not inject into frame: ${err.message}`);
+        }
+      }
 
-      console.log('[SUCCESS] Recording initialized - canvas interactions will be captured');
+      console.log('[SUCCESS] Recording initialized - canvas interactions will be captured (including iframes)');
     } catch (error) {
       console.log(`\n[ERROR] Failed to start recording: ${error.message}`);
       this.isRecording = false;
@@ -481,16 +507,33 @@ class MouseRecorder {
     }
 
     try {
-      this.recordedActions = await this.page.evaluate(() => {
-        // Remove visual indicator
-        const indicator = document.getElementById('__mouse_recorder_indicator');
-        if (indicator) indicator.remove();
+      // Collect actions from all frames
+      const frames = this.page.frames();
+      let allActions = [];
 
-        if (!window.__mouseRecorder || !window.__mouseRecorder.actions) {
-          return [];
+      for (const frame of frames) {
+        try {
+          const frameActions = await frame.evaluate(() => {
+            // Remove visual indicator
+            const indicator = document.getElementById('__mouse_recorder_indicator');
+            if (indicator) indicator.remove();
+
+            if (!window.__mouseRecorder || !window.__mouseRecorder.actions) {
+              return [];
+            }
+            return window.__mouseRecorder.actions;
+          });
+
+          if (frameActions && frameActions.length > 0) {
+            allActions = allActions.concat(frameActions);
+          }
+        } catch (err) {
+          // Frame might be inaccessible, skip it
         }
-        return window.__mouseRecorder.actions;
-      });
+      }
+
+      // Sort all actions by timestamp to maintain proper order
+      this.recordedActions = allActions.sort((a, b) => a.timestamp - b.timestamp);
 
       this.isRecording = false;
 
@@ -559,49 +602,61 @@ class MouseRecorder {
           console.log('\n[Loop] cancel iteration loop');
           break;
         }
-        // Inject click effect function into page for replay visualization
-        await this.page.evaluate(() => {
-          if (!window.__showReplayClickEffect) {
-            // Add CSS animation if not already present
-            if (!document.getElementById('__click_effect_style')) {
-              const style = document.createElement('style');
-              style.id = '__click_effect_style';
-              style.textContent = `
-                @keyframes clickRipple {
-                  0% {
-                    transform: scale(1);
-                    opacity: 1;
-                  }
-                  100% {
-                    transform: scale(3);
-                    opacity: 0;
+
+        // Inject click effect function into all frames for replay visualization
+        const replayFrames = this.page.frames();
+        for (const frame of replayFrames) {
+          try {
+            await frame.evaluate(() => {
+              if (!window.__showReplayClickEffect) {
+                // Add CSS animation if not already present
+                if (!document.getElementById('__click_effect_style')) {
+                  const style = document.createElement('style');
+                  style.id = '__click_effect_style';
+                  style.textContent = `
+                    @keyframes clickRipple {
+                      0% {
+                        transform: scale(1);
+                        opacity: 1;
+                      }
+                      100% {
+                        transform: scale(3);
+                        opacity: 0;
+                      }
+                    }
+                  `;
+                  if (document.head) {
+                    document.head.appendChild(style);
                   }
                 }
-              `;
-              document.head.appendChild(style);
-            }
 
-            window.__showReplayClickEffect = (x, y, isCanvas = false) => {
-              const effect = document.createElement('div');
-              effect.style.cssText = `
-                position: fixed;
-                left: ${x}px;
-                top: ${y}px;
-                width: 20px;
-                height: 20px;
-                margin-left: -10px;
-                margin-top: -10px;
-                border: 3px solid ${isCanvas ? '#00ff00' : '#0099ff'};
-                border-radius: 50%;
-                pointer-events: none;
-                z-index: 999998;
-                animation: clickRipple 0.6s ease-out;
-              `;
-              document.body.appendChild(effect);
-              setTimeout(() => effect.remove(), 600);
-            };
+                window.__showReplayClickEffect = (x, y, isCanvas = false) => {
+                  const effect = document.createElement('div');
+                  effect.style.cssText = `
+                    position: fixed;
+                    left: ${x}px;
+                    top: ${y}px;
+                    width: 20px;
+                    height: 20px;
+                    margin-left: -10px;
+                    margin-top: -10px;
+                    border: 3px solid ${isCanvas ? '#00ff00' : '#0099ff'};
+                    border-radius: 50%;
+                    pointer-events: none;
+                    z-index: 999998;
+                    animation: clickRipple 0.6s ease-out;
+                  `;
+                  if (document.body) {
+                    document.body.appendChild(effect);
+                    setTimeout(() => effect.remove(), 600);
+                  }
+                };
+              }
+            });
+          } catch (err) {
+            // Frame might be inaccessible
           }
-        });
+        }
 
         console.log(`\n[REPLAY STARTED] - Playing ${this.recordedActions.length} actions ${loopCount} time(s)`);
         
@@ -652,17 +707,51 @@ class MouseRecorder {
                 console.log(`[${i + 1}/${this.recordedActions.length}] NETWORK: Disabled packet loss`);
               }
             } else if (action.type === 'click') {
-              await this.page.evaluate(({ x, y, isCanvas }) => {
-                window.__showReplayClickEffect(x, y, isCanvas);
+              // Try clicking in all frames to handle iframes
+              const frames = this.page.frames();
+              let clicked = false;
 
-                // Find element at coordinates and click it programmatically
-                const element = document.elementFromPoint(x, y);
-                if (element) {
-                  element.click();
-                } else {
-                  console.warn(`No element found at (${x}, ${y})`);
+              for (const frame of frames) {
+                try {
+                  const wasClicked = await frame.evaluate(({ x, y, isCanvas }) => {
+                    if (window.__showReplayClickEffect) {
+                      window.__showReplayClickEffect(x, y, isCanvas);
+                    }
+
+                    // Find element at coordinates and click it programmatically
+                    const element = document.elementFromPoint(x, y);
+                    if (element) {
+                      // Dispatch full mouse event sequence for maximum compatibility
+                      const eventOptions = {
+                        view: window,
+                        bubbles: true,
+                        cancelable: true,
+                        clientX: x,
+                        clientY: y,
+                        button: 0,
+                        buttons: 1
+                      };
+
+                      element.dispatchEvent(new MouseEvent('mousedown', eventOptions));
+                      element.dispatchEvent(new MouseEvent('mouseup', eventOptions));
+                      element.dispatchEvent(new MouseEvent('click', eventOptions));
+                      return true;
+                    }
+                    return false;
+                  }, { x: action.x, y: action.y, isCanvas: action.isCanvas });
+
+                  if (wasClicked) {
+                    clicked = true;
+                    break;
+                  }
+                } catch (err) {
+                  // Frame might be inaccessible, try next frame
                 }
-              }, { x: action.x, y: action.y, isCanvas: action.isCanvas });
+              }
+
+              if (!clicked) {
+                console.warn(`[WARN] No element found at (${action.x}, ${action.y}) in any frame`);
+              }
               console.log(`[${i + 1}/${this.recordedActions.length}] Click at (${action.x}, ${action.y})${canvasLabel}`);
             } else if (action.type === 'mousedown') {
               await this.page.evaluate(({ x, y, isCanvas }) => {
