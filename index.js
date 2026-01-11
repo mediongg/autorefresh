@@ -561,10 +561,9 @@ class MouseRecorder {
       this.isRecording = false;
 
       console.log(`[DEBUG] Total actions recorded: ${this.recordedActions.length}`);
-      // Show all click actions with their coordinates
-      const clicks = this.recordedActions.filter(a => a.type === 'click');
-      clicks.forEach((click, idx) => {
-        console.log(`[DEBUG] Click ${idx + 1}: x=${click.x}, y=${click.y}`);
+      // Show ALL recorded actions
+      this.recordedActions.forEach((action, idx) => {
+        console.log(`[DEBUG] Action ${idx + 1}: type=${action.type}, x=${action.x}, y=${action.y}, isInIframe=${action.isInIframe}`);
       });
 
       if (this.recordedActions.length === 0) {
