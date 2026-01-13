@@ -22,6 +22,7 @@ class MouseRecorder {
     this.loadConfig();
 
     this.cancelPostReplay = false;  // Flag to cancel post-replay sequence
+    this.receivedNop = false;  // Flag for NOP request detection
     this.inputMode = 'normal';
     this.inputBuffer = '';
   }
@@ -171,10 +172,16 @@ class MouseRecorder {
         return patterns.some(pattern => url.includes(pattern));
       };
 
-      this.page.on('request', request => {
-        const url = request.url();
+       this.page.on('request', async request => {
+         const url = request.url();
 
-        // Check if this is a START request (A)
+         // Check if this is a NOP request
+         if (url.includes('nop')) {
+           this.receivedNop = true;
+           console.log(`[NOP RECEIVED] Detected NOP request: ${url}`);
+         }
+
+         // Check if this is a START request (A)
         if (!isCapturing && matchesAnyPattern(url, this.networkTrackingStartPatterns)) {
           isCapturing = true;
           capturedRequests = [];
@@ -184,20 +191,14 @@ class MouseRecorder {
 
         // If capturing, log the request (apply filter if configured)
         if (isCapturing) {
-          // If filter patterns are configured, only log matching requests
-          // If no filter patterns, log all requests
-          const shouldLog = this.networkTrackingFilterPatterns.length === 0 ||
-                           matchesAnyPattern(url, this.networkTrackingFilterPatterns);
+          console.log(`[REQUEST] ${request.method()} ${url}`);
+          capturedRequests.push({ type: 'request', method: request.method(), url });
 
-          if (shouldLog) {
-            console.log(`[REQUEST] ${request.method()} ${url}`);
-            capturedRequests.push({ type: 'request', method: request.method(), url });
-
-            // Cancel post-replay sequence if filtered request is detected
-            if (this.networkTrackingFilterPatterns.length > 0 && matchesAnyPattern(url, this.networkTrackingFilterPatterns)) {
-              this.cancelPostReplay = true;
-              console.log(`[CANCEL] Post-replay sequence cancelled due to matching request: ${url}`);
-            }
+          // Cancel post-replay sequence if filtered request is detected
+          if (this.networkTrackingFilterPatterns.length > 0 && matchesAnyPattern(url, this.networkTrackingFilterPatterns)) {
+            this.cancelPostReplay = true;
+            await this.disablePacketLoss();
+            console.log(`[CANCEL] Post-replay sequence cancelled due to matching request: ${url}`);
           }
         }
 
@@ -296,9 +297,6 @@ class MouseRecorder {
           }
           await this.enablePacketLoss();
         } else if (key.name === 'n') {
-          if (this.isRecording) {
-            await this.recordNetworkAction('disablePacketLoss');
-          }
           await this.disablePacketLoss();
         } else if (key.name === 'x') {
           this.cancelPostReplay = true;
@@ -763,6 +761,22 @@ class MouseRecorder {
           break;
         }
 
+        console.log('[REPLAY] Waiting for NOP request after reload...');
+        let waited = 0;
+        const maxWait = 30000; // 60 second timeout
+        while (!this.receivedNop && waited < maxWait) {
+          await this.page.waitForTimeout(500);
+          waited += 500;
+        }
+        if (this.receivedNop) {
+          console.log('[REPLAY] NOP request received, proceeding...');
+        } else {
+          console.log('[REPLAY] Timeout waiting for NOP request, proceeding anyway...');
+        }
+
+        await this.page.waitForTimeout(2000);
+        this.receivedNop = false;
+
         // Inject click effect function into all frames for replay visualization
         const replayFrames = this.page.frames();
         for (const frame of replayFrames) {
@@ -961,8 +975,6 @@ class MouseRecorder {
 
   async postReplaySequence() {
     try {
-      // Reset cancel flag
-      this.cancelPostReplay = false;
 
       // Step 1: Wait for configured time (default 10 seconds) with cancellation checks
       console.log(`[POST-REPLAY] Waiting ${this.postReplayWaitTime / 1000} seconds...`);
@@ -974,7 +986,6 @@ class MouseRecorder {
       for (let i = 0; i < iterations; i++) {
         if (this.cancelPostReplay) {
           console.log('[POST-REPLAY] Wait cancelled, skipping script and reload\n');
-          this.cancelPostReplay = false;
           return;
         }
         await this.page.waitForTimeout(waitInterval);
@@ -983,7 +994,6 @@ class MouseRecorder {
       // Check one more time before proceeding
       if (this.cancelPostReplay) {
         console.log('[POST-REPLAY] Wait cancelled, skipping script and reload\n');
-        this.cancelPostReplay = false;
         return;
       }
 
@@ -1059,7 +1069,7 @@ class MouseRecorder {
         }
       }
 
-      await this.page.waitForTimeout(this.postReloadWaitTime);
+      // await this.page.waitForTimeout(this.postReloadWaitTime);
       console.log('[POST-REPLAY] Page reloaded\n');
     } catch (error) {
       console.log(`[ERROR] Post-replay sequence failed: ${error.message}`);
