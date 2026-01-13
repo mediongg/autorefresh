@@ -25,6 +25,8 @@ class MouseRecorder {
     this.receivedNop = false;  // Flag for NOP request detection
     this.inputMode = 'normal';
     this.inputBuffer = '';
+    this.isCapturing = false;  // Flag for network tracking capture state
+    this.round = 0;
   }
 
   loadConfig() {
@@ -50,15 +52,12 @@ class MouseRecorder {
 
     // Network tracking patterns (can be single string or array of strings)
     this.networkTrackingStartPatterns = config.networkTrackingStartPatterns || [];
-    this.networkTrackingEndPatterns = config.networkTrackingEndPatterns || [];
     this.networkTrackingFilterPatterns = config.networkTrackingFilterPatterns || [];
+    this.networkTrackingSuffix = config.networkTrackingSuffix || '_big';
 
     // Convert to array if single string provided
     if (typeof this.networkTrackingStartPatterns === 'string') {
       this.networkTrackingStartPatterns = [this.networkTrackingStartPatterns];
-    }
-    if (typeof this.networkTrackingEndPatterns === 'string') {
-      this.networkTrackingEndPatterns = [this.networkTrackingEndPatterns];
     }
     if (typeof this.networkTrackingFilterPatterns === 'string') {
       this.networkTrackingFilterPatterns = [this.networkTrackingFilterPatterns];
@@ -163,9 +162,8 @@ class MouseRecorder {
 
     this.page = await this.context.newPage();
 
-    // Add network request logging between A and B (if configured)
-    if (this.networkTrackingStartPatterns.length > 0 || this.networkTrackingEndPatterns.length > 0) {
-      let isCapturing = false;
+    // Add network request logging (if configured)
+    if (this.networkTrackingStartPatterns.length > 0) {
       let capturedRequests = [];
 
       const matchesAnyPattern = (url, patterns) => {
@@ -181,40 +179,38 @@ class MouseRecorder {
            console.log(`[NOP RECEIVED] Detected NOP request: ${url}`);
          }
 
-         // Check if this is a START request (A)
-        if (!isCapturing && matchesAnyPattern(url, this.networkTrackingStartPatterns)) {
-          isCapturing = true;
+         // Check if this is a START request
+        if (!this.isCapturing && matchesAnyPattern(url, this.networkTrackingStartPatterns)) {
+          this.isCapturing = true;
           capturedRequests = [];
-          console.log(`\n[CAPTURE START] Detected A: ${url}`);
-          console.log('[TRACKING] Now logging all requests until B is detected...\n');
+          console.log(`\n[CAPTURE START] Detected start pattern: ${url}`);
+          console.log(`[TRACKING] Now logging requests ending with "${this.networkTrackingSuffix}"...\n`);
         }
 
-        // If capturing, log the request (apply filter if configured)
-        if (isCapturing) {
-          console.log(`[REQUEST] ${request.method()} ${url}`);
-          capturedRequests.push({ type: 'request', method: request.method(), url });
+        // If capturing, only process requests ending with the configured suffix
+        if (this.isCapturing) {
+          // Check if URL ends with the configured suffix (before query string)
+          const urlPath = url.split('?')[0]; // Remove query string
+          if (urlPath.endsWith(this.networkTrackingSuffix)) {
+            console.log(`[REQUEST] ${request.method()} ${url}`);
+            capturedRequests.push({ type: 'request', method: request.method(), url });
 
-          // Cancel post-replay sequence if filtered request is detected
-          if (this.networkTrackingFilterPatterns.length > 0 && matchesAnyPattern(url, this.networkTrackingFilterPatterns)) {
-            this.cancelPostReplay = true;
-            await this.disablePacketLoss();
-            console.log(`[CANCEL] Post-replay sequence cancelled due to matching request: ${url}`);
+            // Cancel post-replay sequence if this request matches filter patterns
+            if (this.networkTrackingFilterPatterns.length > 0 && matchesAnyPattern(url, this.networkTrackingFilterPatterns)) {
+              // this.cancelPostReplay = true;
+              this.round += 1;
+              await this.disablePacketLoss();
+              console.log(`[CANCEL] Post-replay sequence cancelled due to matching request: ${url}`);
+            }
           }
-        }
-
-        // Check if this is an END request (B)
-        if (isCapturing && matchesAnyPattern(url, this.networkTrackingEndPatterns)) {
-          console.log(`\n[CAPTURE END] Detected B: ${url}`);
-          console.log(`[SUMMARY] Captured ${capturedRequests.length} requests between A and B\n`);
-          isCapturing = false;
         }
       });
 
       console.log('[NETWORK TRACKING] Enabled with patterns:');
-      console.log(`  Start (A): ${JSON.stringify(this.networkTrackingStartPatterns)}`);
-      console.log(`  End (B): ${JSON.stringify(this.networkTrackingEndPatterns)}`);
+      console.log(`  Start: ${JSON.stringify(this.networkTrackingStartPatterns)}`);
+      console.log(`  Suffix: "${this.networkTrackingSuffix}"`);
       if (this.networkTrackingFilterPatterns.length > 0) {
-        console.log(`  Filter: ${JSON.stringify(this.networkTrackingFilterPatterns)}`);
+        console.log(`  Filter (for suffix requests): ${JSON.stringify(this.networkTrackingFilterPatterns)}`);
       }
     }
 
@@ -755,11 +751,14 @@ class MouseRecorder {
 
     try {
 
-      for (let currentLoop = 0; currentLoop < loopCount; currentLoop++) {
+      for (let currentLoop = 0; currentLoop < loopCount && this.round <= 5; currentLoop++) {
         if (this.cancelPostReplay) {
           console.log('\n[Loop] cancel iteration loop');
           break;
         }
+
+        // Reset network capturing state at the start of each replay iteration
+        this.isCapturing = false;
 
         console.log('[REPLAY] Waiting for NOP request after reload...');
         let waited = 0;
@@ -1069,7 +1068,7 @@ class MouseRecorder {
         }
       }
 
-      // await this.page.waitForTimeout(this.postReloadWaitTime);
+      await this.page.waitForTimeout(this.postReloadWaitTime);
       console.log('[POST-REPLAY] Page reloaded\n');
     } catch (error) {
       console.log(`[ERROR] Post-replay sequence failed: ${error.message}`);
