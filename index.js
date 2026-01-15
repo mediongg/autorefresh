@@ -26,7 +26,9 @@ class MouseRecorder {
     this.inputMode = 'normal';
     this.inputBuffer = '';
     this.isCapturing = false;  // Flag for network tracking capture state
-    this.round = 0;
+    this.draw = 0;
+    this.targetDraw = 1;
+    this.pendingReplayLoops = 0;  // Store replay count while waiting for draw count
   }
 
   loadConfig() {
@@ -197,10 +199,14 @@ class MouseRecorder {
 
             // Cancel post-replay sequence if this request matches filter patterns
             if (this.networkTrackingFilterPatterns.length > 0 && matchesAnyPattern(url, this.networkTrackingFilterPatterns)) {
-              // this.cancelPostReplay = true;
-              this.round += 1;
+              this.draw += 1;
+              console.log(`[DRAW DETECTED] Draw ${this.draw} of ${this.targetDraw} detected: ${url}`);
+
+              if (this.draw === this.targetDraw) {
+                this.cancelPostReplay = true;
+                console.log(`[CANCEL] Target draw count reached (${this.targetDraw}). Post-replay sequence cancelled.`);
+              }
               await this.disablePacketLoss();
-              console.log(`[CANCEL] Post-replay sequence cancelled due to matching request: ${url}`);
             }
           }
         }
@@ -261,13 +267,39 @@ class MouseRecorder {
             if (isNaN(loopCount) || loopCount <= 0) {
                 loopCount = 1;
             }
-            this.inputMode = 'normal';
+            this.pendingReplayLoops = loopCount;
+            this.inputMode = 'settingTargetDraw';
             this.inputBuffer = '';
             process.stdout.write('\n');
-            await this.replay(loopCount);
+            process.stdout.write('How many draws to wait for before canceling? (default: 1): ');
         } else if (key.name === 'c' || key.name === 'escape') {
             this.inputMode = 'normal';
             this.inputBuffer = '';
+            process.stdout.write('\nReplay setup cancelled.\n');
+        } else if (key.name === 'backspace') {
+            if (this.inputBuffer.length > 0) {
+                this.inputBuffer = this.inputBuffer.slice(0, -1);
+                process.stdout.write('\b \b');
+            }
+        } else if (str && !isNaN(parseInt(str, 10))) {
+            this.inputBuffer += str;
+            process.stdout.write(str);
+        }
+      } else if (this.inputMode === 'settingTargetDraw') {
+        if (key.name === 'return' || key.name === 'enter') {
+            let drawCount = parseInt(this.inputBuffer, 10);
+            if (isNaN(drawCount) || drawCount <= 0) {
+                drawCount = 1;
+            }
+            this.targetDraw = drawCount;
+            this.inputMode = 'normal';
+            this.inputBuffer = '';
+            process.stdout.write('\n');
+            await this.replay(this.pendingReplayLoops);
+        } else if (key.name === 'c' || key.name === 'escape') {
+            this.inputMode = 'normal';
+            this.inputBuffer = '';
+            this.pendingReplayLoops = 0;
             process.stdout.write('\nReplay setup cancelled.\n');
         } else if (key.name === 'backspace') {
             if (this.inputBuffer.length > 0) {
@@ -748,10 +780,11 @@ class MouseRecorder {
     }
 
     this.cancelPostReplay = false; // Reset cancellation flag before starting replay
+    this.draw = 0;
 
     try {
 
-      for (let currentLoop = 0; currentLoop < loopCount && this.round <= 5; currentLoop++) {
+      for (let currentLoop = 0; currentLoop < loopCount; currentLoop++) {
         if (this.cancelPostReplay) {
           console.log('\n[Loop] cancel iteration loop');
           break;
@@ -832,7 +865,8 @@ class MouseRecorder {
         }
 
         console.log(`\n[REPLAY STARTED] - Playing ${this.recordedActions.length} actions ${loopCount} time(s)`);
-        
+        console.log(`[REPLAY CONFIG] - Target draw count: ${this.draw} / ${this.targetDraw}`);
+
         await this.page.evaluate(({ currentLoop, loopCount }) => {
             let indicator = document.getElementById('__replay_indicator');
             if (!indicator) {
