@@ -23,6 +23,7 @@ class MouseRecorder {
 
     this.cancelPostReplay = false;  // Flag to cancel post-replay sequence
     this.receivedNop = false;  // Flag for NOP request detection
+    this.skipNopWait = false;  // Flag to skip NOP wait
     this.inputMode = 'normal';
     this.inputBuffer = '';
     this.isCapturing = false;  // Flag for network tracking capture state
@@ -32,7 +33,9 @@ class MouseRecorder {
   }
 
   loadConfig() {
-    const configPath = './config.json';
+    // Allow config file path to be specified via command-line argument
+    // Usage: node index.js [config-file-path]
+    const configPath = process.argv[2] || './config.json';
     let config = {};
 
     // Try to load config file
@@ -40,10 +43,12 @@ class MouseRecorder {
       try {
         const configData = fs.readFileSync(configPath, 'utf8');
         config = JSON.parse(configData);
-        console.log('[CONFIG] Loaded configuration from config.json');
+        console.log(`[CONFIG] Loaded configuration from ${configPath}`);
       } catch (error) {
-        console.log(`[CONFIG] Error reading config.json, using defaults: ${error.message}`);
+        console.log(`[CONFIG] Error reading ${configPath}, using defaults: ${error.message}`);
       }
+    } else {
+      console.log(`[CONFIG] Config file not found at ${configPath}, using defaults`);
     }
 
     // Set values with fallback to platform-specific defaults
@@ -64,6 +69,28 @@ class MouseRecorder {
     if (typeof this.networkTrackingFilterPatterns === 'string') {
       this.networkTrackingFilterPatterns = [this.networkTrackingFilterPatterns];
     }
+  }
+
+  hotReloadConfig() {
+    console.log('\n[HOT RELOAD] Reloading configuration...');
+    const configPath = process.argv[2] || './config.json';
+
+    // Store old values for comparison
+    const oldPostReplayWaitTime = this.postReplayWaitTime;
+    const oldPostReloadWaitTime = this.postReloadWaitTime;
+    const oldTargetDraw = this.targetDraw;
+
+    // Reload config
+    this.loadConfig();
+
+    // Show what changed
+    console.log('\n[CONFIG] Current settings:');
+    console.log(`  Post-replay wait time: ${this.postReplayWaitTime}ms ${oldPostReplayWaitTime !== this.postReplayWaitTime ? '(CHANGED)' : ''}`);
+    console.log(`  Post-reload wait time: ${this.postReloadWaitTime}ms ${oldPostReloadWaitTime !== this.postReloadWaitTime ? '(CHANGED)' : ''}`);
+    console.log(`  Network tracking start patterns: ${JSON.stringify(this.networkTrackingStartPatterns)}`);
+    console.log(`  Network tracking suffix: "${this.networkTrackingSuffix}"`);
+    console.log(`  Network tracking filter patterns: ${JSON.stringify(this.networkTrackingFilterPatterns)}`);
+    console.log(`\n[HOT RELOAD] Configuration reloaded successfully\n`);
   }
 
   getSessionPath(url) {
@@ -106,7 +133,9 @@ class MouseRecorder {
     console.log('Press "l" - Load a recording from a file');
     console.log('Press "p" - Enable packet loss (records during recording!)');
     console.log('Press "n" - Restore network (records during recording!)');
+    console.log('Press "c" - Skip NOP wait during replay');
     console.log('Press "x" - Cancel replay loop / post-replay sequence');
+    console.log('Press "h" - Hot reload configuration file');
     console.log('Press "q" - Quit\n');
     console.log('TIP: Press "p" during recording to insert packet loss into the sequence!');
 
@@ -326,9 +355,14 @@ class MouseRecorder {
           await this.enablePacketLoss();
         } else if (key.name === 'n') {
           await this.disablePacketLoss();
+        } else if (key.name === 'c') {
+          this.skipNopWait = true;
+          console.log('\n[SKIP] NOP wait skipped by user');
         } else if (key.name === 'x') {
           this.cancelPostReplay = true;
           console.log('\n[CANCELLED] Replay loop/sequence cancelled by user');
+        } else if (key.name === 'h') {
+          this.hotReloadConfig();
         } else if (key.name === 'q') {
           await this.cleanup();
           process.exit();
@@ -475,7 +509,6 @@ class MouseRecorder {
         if (window.__mouseRecorderListeners) {
           const listeners = window.__mouseRecorderListeners;
           document.removeEventListener('mousedown', listeners.mousedown, true);
-          document.removeEventListener('mousemove', listeners.mousemove, true);
           document.removeEventListener('mouseup', listeners.mouseup, true);
           document.removeEventListener('click', listeners.click, true);
         }
@@ -578,11 +611,6 @@ class MouseRecorder {
               recordAction('mousedown', e.clientX, e.clientY, false, e.target);
             }
           },
-          mousemove: (e) => {
-            if (window.__mouseRecorder.isMouseDown && e.target.ownerDocument === document) {
-              recordAction('mousemove', e.clientX, e.clientY, true, e.target);
-            }
-          },
           mouseup: (e) => {
             if (window.__mouseRecorder.isMouseDown && e.target.ownerDocument === document) {
               const isDrag = Math.abs(e.clientX - window.__mouseRecorder.startX) > 5 ||
@@ -605,7 +633,6 @@ class MouseRecorder {
 
         // Add event listeners with capture phase to intercept canvas events
         document.addEventListener('mousedown', listeners.mousedown, true);
-        document.addEventListener('mousemove', listeners.mousemove, true);
         document.addEventListener('mouseup', listeners.mouseup, true);
         document.addEventListener('click', listeners.click, true);
           });
@@ -670,7 +697,6 @@ class MouseRecorder {
             if (window.__mouseRecorderListeners) {
               const listeners = window.__mouseRecorderListeners;
               document.removeEventListener('mousedown', listeners.mousedown, true);
-              document.removeEventListener('mousemove', listeners.mousemove, true);
               document.removeEventListener('mouseup', listeners.mouseup, true);
               document.removeEventListener('click', listeners.click, true);
               delete window.__mouseRecorderListeners;
@@ -794,13 +820,17 @@ class MouseRecorder {
         this.isCapturing = false;
 
         console.log('[REPLAY] Waiting for NOP request after reload...');
+        console.log('[TIP] Press "c" to skip waiting for NOP');
         let waited = 0;
         const maxWait = 30000; // 60 second timeout
-        while (!this.receivedNop && waited < maxWait) {
+        this.skipNopWait = false; // Reset skip flag
+        while (!this.receivedNop && !this.skipNopWait && waited < maxWait) {
           await this.page.waitForTimeout(500);
           waited += 500;
         }
-        if (this.receivedNop) {
+        if (this.skipNopWait) {
+          console.log('[REPLAY] NOP wait skipped by user, proceeding...');
+        } else if (this.receivedNop) {
           console.log('[REPLAY] NOP request received, proceeding...');
         } else {
           console.log('[REPLAY] Timeout waiting for NOP request, proceeding anyway...');
@@ -808,6 +838,7 @@ class MouseRecorder {
 
         await this.page.waitForTimeout(2000);
         this.receivedNop = false;
+        this.skipNopWait = false; // Reset skip flag
 
         // Inject click effect function into all frames for replay visualization
         const replayFrames = this.page.frames();
@@ -864,8 +895,8 @@ class MouseRecorder {
           }
         }
 
-        console.log(`\n[REPLAY STARTED] - Playing ${this.recordedActions.length} actions ${loopCount} time(s)`);
-        console.log(`[REPLAY CONFIG] - Target draw count: ${this.draw} / ${this.targetDraw}`);
+        console.log(`\n[REPLAY STARTED] - Playing ${this.recordedActions.length} actions ${currentLoop} / ${loopCount} time(s)`);
+        console.log(`[REPLAY CONFIG] - Target draw count: ${this.draw} / ${this.targetDraw} times(s)`);
 
         await this.page.evaluate(({ currentLoop, loopCount }) => {
             let indicator = document.getElementById('__replay_indicator');
@@ -894,6 +925,10 @@ class MouseRecorder {
         }, { currentLoop, loopCount });
 
         console.log(`[REPLAY] Starting loop ${currentLoop + 1} of ${loopCount}...`);
+
+        // Track last mousedown position for drag interpolation
+        let lastMouseDownX = 0;
+        let lastMouseDownY = 0;
 
         for (let i = 0; i < this.recordedActions.length; i++) {
           if (this.cancelPostReplay) {
@@ -948,22 +983,17 @@ class MouseRecorder {
                 globalY = action.y + action.frameOffset.y;
               }
 
+              // Save position for drag interpolation
+              lastMouseDownX = globalX;
+              lastMouseDownY = globalY;
+
               await this.page.mouse.move(globalX, globalY);
               await this.page.mouse.down();
               console.log(`[${i + 1}/${this.recordedActions.length}] Mouse down at (${action.x}, ${action.y})${canvasLabel}`);
             } else if (action.type === 'mousemove' && action.isDrag) {
-              let globalX = action.x;
-              let globalY = action.y;
-
-              if (action.frameOffset) {
-                globalX = action.x + action.frameOffset.x;
-                globalY = action.y + action.frameOffset.y;
-              }
-
-              await this.page.mouse.move(globalX, globalY);
-              if (i % 10 === 0) {
-                console.log(`[${i + 1}/${this.recordedActions.length}] Drag to (${action.x}, ${action.y})${canvasLabel}`);
-              }
+              // Skip mousemove events for instant drag behavior
+              // Maintains backward compatibility with old recordings
+              continue;
             } else if (action.type === 'mouseup') {
               let globalX = action.x;
               let globalY = action.y;
@@ -973,9 +1003,28 @@ class MouseRecorder {
                 globalY = action.y + action.frameOffset.y;
               }
 
+              // If this is a drag, interpolate between mousedown and mouseup positions
+              // This generates intermediate mousemove events so canvas apps can draw the path
+              if (action.isDrag) {
+                const steps = 15; // Number of intermediate points
+                const deltaX = (globalX - lastMouseDownX) / steps;
+                const deltaY = (globalY - lastMouseDownY) / steps;
+
+                for (let step = 1; step <= steps; step++) {
+                  const interpolatedX = lastMouseDownX + (deltaX * step);
+                  const interpolatedY = lastMouseDownY + (deltaY * step);
+                  await this.page.mouse.move(interpolatedX, interpolatedY);
+                  // Small delay to allow canvas to process each move
+                  await this.page.waitForTimeout(5);
+                }
+              }
+
+              // Always move to exact final position (ensures accuracy even after interpolation)
               await this.page.mouse.move(globalX, globalY);
+
               await this.page.mouse.up();
-              console.log(`[${i + 1}/${this.recordedActions.length}] Mouse up at (${action.x}, ${action.y})${canvasLabel}`);
+              const dragLabel = action.isDrag ? ' [DRAG]' : '';
+              console.log(`[${i + 1}/${this.recordedActions.length}] Mouse up at (${action.x}, ${action.y})${canvasLabel}${dragLabel}`);
             }
 
             if (i < this.recordedActions.length - 1) {
@@ -1032,74 +1081,89 @@ class MouseRecorder {
 
       console.log('[POST-REPLAY] Wait complete');
 
-      // Step 2: Run shell script if it exists
-      if (fs.existsSync(this.postReplayScript)) {
-        // Convert to absolute path (Windows doesn't like './')
-        const absoluteScriptPath = path.resolve(this.postReplayScript);
-        console.log(`[POST-REPLAY] Executing script: ${absoluteScriptPath}`);
-
-        try {
-          // Determine the appropriate shell command based on platform
-          let command;
-          if (process.platform === 'win32') {
-            // Windows: use cmd.exe to execute .bat or .cmd files
-            // Quote the path in case it contains spaces
-            command = `cmd /c "${absoluteScriptPath}"`;
-          } else {
-            // Unix/Linux/macOS: use bash for .sh files
-            command = `bash "${absoluteScriptPath}"`;
-          }
-
-          const { stdout, stderr } = await execAsync(command);
-
-          if (stdout) {
-            console.log('[SCRIPT OUTPUT]');
-            // Handle both string and buffer
-            const output = typeof stdout === 'string' ? stdout : stdout.toString();
-            console.log(output.trim());
-          }
-
-          if (stderr) {
-            console.log('[SCRIPT ERRORS]');
-            // Handle both string and buffer
-            const errors = typeof stderr === 'string' ? stderr : stderr.toString();
-            console.log(errors.trim());
-          }
-
-          console.log('[POST-REPLAY] Script execution complete');
-        } catch (error) {
-          console.log(`[ERROR] Script execution failed: ${error.message}`);
-        }
-      } else {
-        console.log(`[POST-REPLAY] No script found at ${this.postReplayScript}, skipping`);
-      }
-
-      // Step 3: Restore network (disable packet loss)
-      console.log('[POST-REPLAY] Restoring network...');
-      await this.disablePacketLoss();
-
-      // Step 4: Reload the page
+      // // Step 2: Run shell script if it exists
+      // if (fs.existsSync(this.postReplayScript)) {
+      //   // Convert to absolute path (Windows doesn't like './')
+      //   const absoluteScriptPath = path.resolve(this.postReplayScript);
+      //   console.log(`[POST-REPLAY] Executing script: ${absoluteScriptPath}`);
+      //
+      //   try {
+      //     // Determine the appropriate shell command based on platform
+      //     let command;
+      //     if (process.platform === 'win32') {
+      //       // Windows: use cmd.exe to execute .bat or .cmd files
+      //       // Quote the path in case it contains spaces
+      //       command = `cmd /c "${absoluteScriptPath}"`;
+      //     } else {
+      //       // Unix/Linux/macOS: use bash for .sh files
+      //       command = `bash "${absoluteScriptPath}"`;
+      //     }
+      //
+      //     const { stdout, stderr } = await execAsync(command);
+      //
+      //     if (stdout) {
+      //       console.log('[SCRIPT OUTPUT]');
+      //       // Handle both string and buffer
+      //       const output = typeof stdout === 'string' ? stdout : stdout.toString();
+      //       console.log(output.trim());
+      //     }
+      //
+      //     if (stderr) {
+      //       console.log('[SCRIPT ERRORS]');
+      //       // Handle both string and buffer
+      //       const errors = typeof stderr === 'string' ? stderr : stderr.toString();
+      //       console.log(errors.trim());
+      //     }
+      //
+      //     console.log('[POST-REPLAY] Script execution complete');
+      //   } catch (error) {
+      //     console.log(`[ERROR] Script execution failed: ${error.message}`);
+      //   }
+      // } else {
+      //   console.log(`[POST-REPLAY] No script found at ${this.postReplayScript}, skipping`);
+      // }
+      //
+      // // Step 3: Restore network (disable packet loss)
+      // console.log('[POST-REPLAY] Restoring network...');
+      // await this.disablePacketLoss();
+      //
+      // // Step 4: Reload the page
       console.log('[POST-REPLAY] Reloading page...');
 
       // Wait a bit for network to stabilize after WiFi toggle
-      await this.page.waitForTimeout(2000);
+      // await this.page.waitForTimeout(2000);
 
       // Try to reload with error handling
       try {
-        await this.page.reload({
-          waitUntil: 'domcontentloaded',  // Less strict than 'networkidle'
-          timeout: 30000  // 30 second timeout
+        // Start reload with packet loss enabled (don't await - we'll cancel it)
+        const reloadPromise = this.page.reload({
+          waitUntil: 'domcontentloaded',
+          timeout: 30000
+        }).catch(err => {
+          // Expected error - reload will be aborted when we navigate to about:blank
+          console.log(`[POST-REPLAY] Reload aborted as expected: ${err.message}`);
         });
+
+        console.log('[POST-REPLAY] wait for 1 seconds...');
+        await this.page.waitForTimeout(1000);
+
+        // Navigate to about:blank to cancel all pending requests
+        console.log('[POST-REPLAY] Cancelling pending requests...');
+        await this.page.goto('about:blank', { waitUntil: 'domcontentloaded', timeout: 5000 });
+
+        // Now it's safe to restore network - all requests are cancelled
+        await this.disablePacketLoss();
+
+        // Navigate back to the original URL
+        console.log('[POST-REPLAY] Reloading with restored network...');
+        await this.page.goto(this.currentUrl, {
+          waitUntil: 'domcontentloaded',
+          timeout: 30000
+        });
+
       } catch (error) {
-        console.log(`[WARN] Reload failed, retrying: ${error.message}`);
-        // Wait a bit more and retry
-        await this.page.waitForTimeout(3000);
-        try {
-          await this.page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
-        } catch (retryError) {
-          console.log(`[ERROR] Reload retry failed: ${retryError.message}`);
-          console.log('[INFO] You may need to manually refresh the page');
-        }
+        console.log(`[ERROR] Reload failed: ${error.message}`);
+        console.log('[INFO] You may need to manually refresh the page');
       }
 
       await this.page.waitForTimeout(this.postReloadWaitTime);
