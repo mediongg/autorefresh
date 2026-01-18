@@ -30,6 +30,7 @@ class MouseRecorder {
     this.draw = 0;
     this.targetDraw = 1;
     this.pendingReplayLoops = 0;  // Store replay count while waiting for draw count
+    this.capturedUrls = [];  // Store matching URLs for overlay display
   }
 
   loadConfig() {
@@ -71,7 +72,7 @@ class MouseRecorder {
     }
   }
 
-  hotReloadConfig() {
+  async hotReloadConfig() {
     console.log('\n[HOT RELOAD] Reloading configuration...');
     const configPath = process.argv[2] || './config.json';
 
@@ -91,6 +92,9 @@ class MouseRecorder {
     console.log(`  Network tracking suffix: "${this.networkTrackingSuffix}"`);
     console.log(`  Network tracking filter patterns: ${JSON.stringify(this.networkTrackingFilterPatterns)}`);
     console.log(`\n[HOT RELOAD] Configuration reloaded successfully\n`);
+
+    // Update overlay with new config
+    await this.updateFilterOverlay();
   }
 
   getSessionPath(url) {
@@ -210,13 +214,13 @@ class MouseRecorder {
            console.log(`[NOP RECEIVED] Detected NOP request: ${url}`);
          }
 
-         // Check if this is a START request
-        if (!this.isCapturing && matchesAnyPattern(url, this.networkTrackingStartPatterns)) {
-          this.isCapturing = true;
-          capturedRequests = [];
-          console.log(`\n[CAPTURE START] Detected start pattern: ${url}`);
-          console.log(`[TRACKING] Now logging requests ending with "${this.networkTrackingSuffix}"...\n`);
-        }
+          // Check if this is a START request
+         if (!this.isCapturing && matchesAnyPattern(url, this.networkTrackingStartPatterns)) {
+           this.isCapturing = true;
+           capturedRequests = [];
+           console.log(`\n[CAPTURE START] Detected start pattern: ${url}`);
+           console.log(`[TRACKING] Now logging requests ending with "${this.networkTrackingSuffix}"...\n`);
+         }
 
         // If capturing, only process requests ending with the configured suffix
         if (this.isCapturing) {
@@ -229,7 +233,23 @@ class MouseRecorder {
             // Cancel post-replay sequence if this request matches filter patterns
             if (this.networkTrackingFilterPatterns.length > 0 && matchesAnyPattern(url, this.networkTrackingFilterPatterns)) {
               this.draw += 1;
+
+              // Extract last part of URL after the last '/'
+              const urlParts = url.split('/');
+              let lastPart = urlParts[urlParts.length - 1];
+
+              // Remove networkTrackingSuffix if present
+              if (lastPart.endsWith(this.networkTrackingSuffix)) {
+                lastPart = lastPart.slice(0, -this.networkTrackingSuffix.length);
+              }
+
+              this.capturedUrls.push(lastPart);
+
               console.log(`[DRAW DETECTED] Draw ${this.draw} of ${this.targetDraw} detected: ${url}`);
+              console.log(`[URL CAPTURED] ${lastPart}`);
+
+              // Update the URL overlay
+              await this.updateUrlOverlay();
 
               if (this.draw === this.targetDraw) {
                 this.cancelPostReplay = true;
@@ -253,6 +273,111 @@ class MouseRecorder {
     await this.page.goto(url);
 
     console.log('Browser ready!\n');
+  }
+
+  async initFilterOverlay() {
+    await this.page.evaluate(() => {
+      const overlay = document.getElementById('__filter_overlay');
+      if (overlay) overlay.remove();
+
+      const filterOverlay = document.createElement('div');
+      filterOverlay.id = '__filter_overlay';
+      filterOverlay.style.cssText = `
+        position: fixed;
+        left: 10px;
+        bottom: 10px;
+        background: rgba(255, 255, 255, 0.95);
+        color: black;
+        padding: 12px 16px;
+        border-radius: 6px;
+        font-family: 'Courier New', monospace;
+        font-size: 14px;
+        font-weight: normal;
+        z-index: 999999;
+        pointer-events: none;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+        max-width: 300px;
+        line-height: 1.8;
+      `;
+      document.body.appendChild(filterOverlay);
+    });
+    await this.updateFilterOverlay();
+  }
+
+  async updateFilterOverlay() {
+    const filterPatterns = this.networkTrackingFilterPatterns.length > 0 ? this.networkTrackingFilterPatterns : ['None'];
+
+    await this.page.evaluate(({ filterPatterns }) => {
+      const overlay = document.getElementById('__filter_overlay');
+      if (!overlay) return;
+
+      let patternsHtml = '';
+      if (Array.isArray(filterPatterns)) {
+        patternsHtml = filterPatterns.map(p => `<div style="color: #333;">${p}</div>`).join('');
+      } else {
+        patternsHtml = `<div style="color: #333;">${filterPatterns}</div>`;
+      }
+
+      overlay.innerHTML = `
+        <div style="margin-bottom: 6px; border-bottom: 1px solid #ddd; padding-bottom: 4px;"><strong>Filter Patterns:</strong></div>
+        ${patternsHtml}
+      `;
+    }, { filterPatterns });
+  }
+
+  async initUrlOverlay() {
+    await this.page.evaluate(() => {
+      const overlay = document.getElementById('__url_overlay');
+      if (overlay) overlay.remove();
+
+      const urlOverlay = document.createElement('div');
+      urlOverlay.id = '__url_overlay';
+      urlOverlay.style.cssText = `
+        position: fixed;
+        right: 10px;
+        top: 50%;
+        transform: translateY(-50%);
+        background: rgba(255, 255, 255, 0.95);
+        color: black;
+        padding: 12px 16px;
+        border-radius: 6px;
+        font-family: 'Courier New', monospace;
+        font-size: 14px;
+        font-weight: normal;
+        z-index: 999999;
+        pointer-events: none;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+        max-width: 300px;
+        max-height: 300px;
+        overflow-y: auto;
+        line-height: 1.8;
+      `;
+      document.body.appendChild(urlOverlay);
+    });
+    await this.updateUrlOverlay();
+  }
+
+  async updateUrlOverlay() {
+    const capturedUrls = this.capturedUrls.length > 0 ? this.capturedUrls : [];
+
+    await this.page.evaluate(({ capturedUrls }) => {
+      const overlay = document.getElementById('__url_overlay');
+      if (!overlay) return;
+
+      let urlsHtml = '';
+      if (capturedUrls.length === 0) {
+        urlsHtml = '<div style="color: #999; font-style: italic;">No draw</div>';
+      } else {
+        urlsHtml = capturedUrls.map((url, index) =>
+          `<div style="color: #333; margin: 4px 0;">${index + 1}. ${url}</div>`
+        ).join('');
+      }
+
+      overlay.innerHTML = `
+        <div style="margin-bottom: 6px; border-bottom: 1px solid #ddd; padding-bottom: 4px;"><strong>Draw:</strong></div>
+        ${urlsHtml}
+      `;
+    }, { capturedUrls });
   }
 
   setupKeyboardListener() {
@@ -362,7 +487,7 @@ class MouseRecorder {
           this.cancelPostReplay = true;
           console.log('\n[CANCELLED] Replay loop/sequence cancelled by user');
         } else if (key.name === 'h') {
-          this.hotReloadConfig();
+          await this.hotReloadConfig();
         } else if (key.name === 'q') {
           await this.cleanup();
           process.exit();
@@ -807,6 +932,7 @@ class MouseRecorder {
 
     this.cancelPostReplay = false; // Reset cancellation flag before starting replay
     this.draw = 0;
+    this.capturedUrls = [];
 
     try {
 
@@ -816,8 +942,15 @@ class MouseRecorder {
           break;
         }
 
+        // Re-initialize the filter overlay at the start of each loop
+        await this.initFilterOverlay();
+
+        // Re-initialize the URL overlay at the start of each loop
+        await this.initUrlOverlay();
+
         // Reset network capturing state at the start of each replay iteration
         this.isCapturing = false;
+
 
         console.log('[REPLAY] Waiting for NOP request after reload...');
         console.log('[TIP] Press "c" to skip waiting for NOP');
