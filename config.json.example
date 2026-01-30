@@ -3,6 +3,11 @@
   "postReplayWaitTime": 6000,
   "postReloadWaitTime": 8000,
 
+  "predefinedUrls": [
+    "https://example.com",
+    "https://google.com"
+  ],
+
   "networkTrackingStartPatterns": [
     "init_open_chest"
   ],
@@ -12,13 +17,17 @@
   "networkTrackingFilterPatterns": [
     "webgl_bundles",
   ],
+  "networkTrackingExcludeFilters": [],
 
-  "_comment1": "On Windows, use './post-replay.bat' or './post-replay.cmd' instead of .sh",
-  "_comment2": "networkTrackingStartPatterns: Array of URL patterns to start capturing requests (A)",
-  "_comment3": "networkTrackingEndPatterns: Array of URL patterns to stop capturing requests (B)",
-  "_comment4": "networkTrackingFilterPatterns: Array of URL patterns to filter captured requests (optional)",
-  "_comment5": "If filterPatterns is empty [], logs ALL requests between A and B",
-  "_comment6": "If filterPatterns has values, only logs requests matching those patterns",
-  "_comment7": "You can also use a single string instead of an array for any pattern option",
-  "_comment8": "Leave start/end arrays empty [] to disable network tracking"
+  "_comment1": "predefinedUrls: Optional array of URLs to select from at startup",
+  "_comment2": "On Windows, use './post-replay.bat' or './post-replay.cmd' instead of .sh",
+  "_comment3": "networkTrackingStartPatterns: Array of URL patterns to start capturing requests (A)",
+  "_comment4": "networkTrackingEndPatterns: Array of URL patterns to stop capturing requests (B)",
+  "_comment5": "networkTrackingFilterPatterns: Array of URL patterns to filter captured requests (optional)",
+  "_comment6": "networkTrackingExcludeFilters: Array of URL patterns to exclude even if they match filters",
+  "_comment7": "If filterPatterns is empty [], logs ALL requests between A and B",
+  "_comment8": "If filterPatterns has values, only logs requests matching those patterns",
+  "_comment9": "excludeFilters are checked AFTER filters - URLs matching both filter AND exclude are skipped",
+  "_comment10": "You can also use a single string instead of an array for any pattern option",
+  "_comment11": "Leave start/end arrays empty [] to disable network tracking"
 }

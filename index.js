@@ -61,7 +61,11 @@ class MouseRecorder {
     // Network tracking patterns (can be single string or array of strings)
     this.networkTrackingStartPatterns = config.networkTrackingStartPatterns || [];
     this.networkTrackingFilterPatterns = config.networkTrackingFilterPatterns || [];
+    this.networkTrackingExcludeFilters = config.networkTrackingExcludeFilters || [];
     this.networkTrackingSuffix = config.networkTrackingSuffix || '_big';
+
+    // Predefined URLs
+    this.predefinedUrls = config.predefinedUrls || [];
 
     // Convert to array if single string provided
     if (typeof this.networkTrackingStartPatterns === 'string') {
@@ -69,6 +73,9 @@ class MouseRecorder {
     }
     if (typeof this.networkTrackingFilterPatterns === 'string') {
       this.networkTrackingFilterPatterns = [this.networkTrackingFilterPatterns];
+    }
+    if (typeof this.networkTrackingExcludeFilters === 'string') {
+      this.networkTrackingExcludeFilters = [this.networkTrackingExcludeFilters];
     }
   }
 
@@ -91,6 +98,7 @@ class MouseRecorder {
     console.log(`  Network tracking start patterns: ${JSON.stringify(this.networkTrackingStartPatterns)}`);
     console.log(`  Network tracking suffix: "${this.networkTrackingSuffix}"`);
     console.log(`  Network tracking filter patterns: ${JSON.stringify(this.networkTrackingFilterPatterns)}`);
+    console.log(`  Network tracking exclude filters: ${JSON.stringify(this.networkTrackingExcludeFilters)}`);
     console.log(`\n[HOT RELOAD] Configuration reloaded successfully\n`);
 
     // Update overlay with new config
@@ -113,15 +121,35 @@ class MouseRecorder {
 
     const askUrl = () => {
       return new Promise((resolve) => {
-        rl.question('Enter website URL: ', (answer) => {
-          rl.close();
-          resolve(answer);
-        });
+        // Show predefined URLs if available
+        if (this.predefinedUrls.length > 0) {
+          console.log('Predefined URLs:');
+          this.predefinedUrls.forEach((url, i) => {
+            console.log(`  ${i + 1}: ${url}`);
+          });
+          console.log('');
+          rl.question('Select URL number or enter custom URL: ', (answer) => {
+            rl.close();
+            resolve(answer);
+          });
+        } else {
+          rl.question('Enter website URL: ', (answer) => {
+            rl.close();
+            resolve(answer);
+          });
+        }
       });
     };
 
-    const url = await askUrl();
-    let finalUrl = url;
+    const urlInput = await askUrl();
+    let finalUrl = urlInput;
+
+    // Check if input is a number (selecting from predefined list)
+    const selectedIndex = parseInt(urlInput, 10);
+    if (!isNaN(selectedIndex) && selectedIndex > 0 && selectedIndex <= this.predefinedUrls.length) {
+      finalUrl = this.predefinedUrls[selectedIndex - 1];
+      console.log(`Selected: ${finalUrl}`);
+    }
 
     if (!finalUrl.startsWith('http://') && !finalUrl.startsWith('https://')) {
       finalUrl = 'https://' + finalUrl;
@@ -230,9 +258,21 @@ class MouseRecorder {
             console.log(`[REQUEST] ${request.method()} ${url}`);
             capturedRequests.push({ type: 'request', method: request.method(), url });
 
-            // Cancel post-replay sequence if this request matches filter patterns
+            // Check if URL matches filter patterns
             if (this.networkTrackingFilterPatterns.length > 0 && matchesAnyPattern(url, this.networkTrackingFilterPatterns)) {
+              // Filter matched - now check exclude filters
+              if (this.networkTrackingExcludeFilters.length > 0 && matchesAnyPattern(url, this.networkTrackingExcludeFilters)) {
+                // Matched exclude filter - skip this URL
+                return;
+              }
+
+              // Passed both checks - process the URL
               this.draw += 1;
+
+            // Play notification sound (triple beep)
+              process.stdout.write('\x07');
+              setTimeout(() => process.stdout.write('\x07'), 100);
+              setTimeout(() => process.stdout.write('\x07'), 200);
 
               // Extract last part of URL after the last '/'
               const urlParts = url.split('/');
@@ -306,23 +346,39 @@ class MouseRecorder {
 
   async updateFilterOverlay() {
     const filterPatterns = this.networkTrackingFilterPatterns.length > 0 ? this.networkTrackingFilterPatterns : ['None'];
+    const excludeFilters = this.networkTrackingExcludeFilters.length > 0 ? this.networkTrackingExcludeFilters : ['None'];
 
-    await this.page.evaluate(({ filterPatterns }) => {
+    await this.page.evaluate(({ filterPatterns, excludeFilters }) => {
       const overlay = document.getElementById('__filter_overlay');
       if (!overlay) return;
 
-      let patternsHtml = '';
+      // Build filter patterns HTML
+      let filterPatternsHtml = '';
       if (Array.isArray(filterPatterns)) {
-        patternsHtml = filterPatterns.map(p => `<div style="color: #333;">${p}</div>`).join('');
+        filterPatternsHtml = filterPatterns.map(p => `<div style="color: #333;">${p}</div>`).join('');
       } else {
-        patternsHtml = `<div style="color: #333;">${filterPatterns}</div>`;
+        filterPatternsHtml = `<div style="color: #333;">${filterPatterns}</div>`;
+      }
+
+      // Build exclude filters HTML (in red to distinguish)
+      let excludeFiltersHtml = '';
+      if (Array.isArray(excludeFilters)) {
+        excludeFiltersHtml = excludeFilters.map(p => `<div style="color: #d32f2f;">${p}</div>`).join('');
+      } else {
+        excludeFiltersHtml = `<div style="color: #d32f2f;">${excludeFilters}</div>`;
       }
 
       overlay.innerHTML = `
-        <div style="margin-bottom: 6px; border-bottom: 1px solid #ddd; padding-bottom: 4px;"><strong>Filter Patterns:</strong></div>
-        ${patternsHtml}
+        <div style="margin-bottom: 6px; border-bottom: 1px solid #ddd; padding-bottom: 4px;">
+          <strong>Filter Patterns:</strong>
+        </div>
+        ${filterPatternsHtml}
+        <div style="margin-top: 12px; margin-bottom: 6px; border-bottom: 1px solid #ddd; padding-bottom: 4px;">
+          <strong>Exclude Filters:</strong>
+        </div>
+        ${excludeFiltersHtml}
       `;
-    }, { filterPatterns });
+    }, { filterPatterns, excludeFilters });
   }
 
   async initUrlOverlay() {
@@ -1179,11 +1235,17 @@ class MouseRecorder {
       }
     } finally {
       // Ensure the replay indicator is always removed
-      if (this.page && !this.page.isClosed()) {
-        await this.page.evaluate(() => {
-          const indicator = document.getElementById('__replay_indicator');
-          if (indicator) indicator.remove();
-        });
+      try {
+        if (this.page && !this.page.isClosed()) {
+          await this.page.evaluate(() => {
+            const indicator = document.getElementById('__replay_indicator');
+            if (indicator) indicator.remove();
+          }).catch(err => {
+            console.log(`[WARN] Could not remove replay indicator: ${err.message}`);
+          });
+        }
+      } catch (err) {
+        console.log(`[WARN] Cleanup failed: ${err.message}`);
       }
     }
   }
