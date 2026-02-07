@@ -806,6 +806,32 @@ class MouseRecorder {
             if (e.target.ownerDocument === document && !window.__mouseRecorder.isMouseDown) {
               recordAction('click', e.clientX, e.clientY, false, e.target);
             }
+          },
+          wheel: (e) => {
+            if (e.target.ownerDocument === document) {
+              const isCanvas = e.target && e.target.tagName === 'CANVAS';
+
+              const action = {
+                type: 'wheel',
+                x: e.clientX,
+                y: e.clientY,
+                pageX: e.clientX + window.scrollX,
+                pageY: e.clientY + window.scrollY,
+                deltaX: e.deltaX,
+                deltaY: e.deltaY,
+                deltaZ: e.deltaZ || 0,
+                deltaMode: e.deltaMode,
+                timestamp: Date.now(),
+                isCanvas,
+                isInIframe: !!window.frameElement
+              };
+
+              window.__mouseRecorder.actions.push(action);
+
+              if (isCanvas) {
+                console.log(`[Canvas wheel] at (${e.clientX}, ${e.clientY}) delta: ${e.deltaY}`);
+              }
+            }
           }
         };
 
@@ -816,6 +842,7 @@ class MouseRecorder {
         document.addEventListener('mousedown', listeners.mousedown, true);
         document.addEventListener('mouseup', listeners.mouseup, true);
         document.addEventListener('click', listeners.click, true);
+        document.addEventListener('wheel', listeners.wheel, { passive: true, capture: true });
           });
         } catch (err) {
           console.log(`[WARN] Could not inject into frame: ${err.message}`);
@@ -880,6 +907,7 @@ class MouseRecorder {
               document.removeEventListener('mousedown', listeners.mousedown, true);
               document.removeEventListener('mouseup', listeners.mouseup, true);
               document.removeEventListener('click', listeners.click, true);
+              document.removeEventListener('wheel', listeners.wheel, { capture: true });
               delete window.__mouseRecorderListeners;
             }
           });
@@ -939,6 +967,7 @@ class MouseRecorder {
       // Count different action types
       const canvasActions = this.recordedActions.filter(a => a.isCanvas).length;
       const networkActions = this.recordedActions.filter(a => a.type === 'networkAction').length;
+      const wheelActions = this.recordedActions.filter(a => a.type === 'wheel').length;
       const totalActions = this.recordedActions.length;
       const packetLossWasEnabled = this.recordedActions.some(a => a.type === 'networkAction' && a.networkActionType === 'enablePacketLoss');
 
@@ -948,6 +977,9 @@ class MouseRecorder {
       }
       if (networkActions > 0) {
         console.log(`[INFO] ${networkActions} network actions (packet loss toggles)`);
+      }
+      if (wheelActions > 0) {
+        console.log(`[INFO] ${wheelActions} wheel/scroll actions`);
       }
       if (packetLossWasEnabled) {
         console.log('[INFO] This recording includes sequences with packet loss enabled.');
@@ -1214,6 +1246,37 @@ class MouseRecorder {
               await this.page.mouse.up();
               const dragLabel = action.isDrag ? ' [DRAG]' : '';
               console.log(`[${i + 1}/${this.recordedActions.length}] Mouse up at (${action.x}, ${action.y})${canvasLabel}${dragLabel}`);
+            } else if (action.type === 'wheel') {
+              // Calculate global coordinates using stored frame offset
+              let globalX = action.x;
+              let globalY = action.y;
+
+              if (action.frameOffset) {
+                globalX = action.x + action.frameOffset.x;
+                globalY = action.y + action.frameOffset.y;
+              }
+
+              // Normalize deltaX and deltaY based on deltaMode
+              let normalizedDeltaX = action.deltaX;
+              let normalizedDeltaY = action.deltaY;
+
+              if (action.deltaMode === 1) { // DOM_DELTA_LINE
+                normalizedDeltaX *= 40; // Approximate line height in pixels
+                normalizedDeltaY *= 40;
+              } else if (action.deltaMode === 2) { // DOM_DELTA_PAGE
+                const viewportHeight = await this.page.evaluate(() => window.innerHeight);
+                normalizedDeltaX *= viewportHeight;
+                normalizedDeltaY *= viewportHeight;
+              }
+
+              // Move mouse to position before scrolling (important for canvas apps)
+              await this.page.mouse.move(globalX, globalY);
+
+              // Use Playwright's mouse.wheel() API
+              await this.page.mouse.wheel(normalizedDeltaX, normalizedDeltaY);
+
+              const directionLabel = normalizedDeltaY > 0 ? '↓' : '↑';
+              console.log(`[${i + 1}/${this.recordedActions.length}] Wheel ${directionLabel} at (${action.x}, ${action.y}) delta:(${normalizedDeltaX.toFixed(0)}, ${normalizedDeltaY.toFixed(0)})${canvasLabel}`);
             }
 
             if (i < this.recordedActions.length - 1) {
