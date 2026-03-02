@@ -77,6 +77,50 @@ class MouseRecorder {
     if (typeof this.networkTrackingExcludeFilters === 'string') {
       this.networkTrackingExcludeFilters = [this.networkTrackingExcludeFilters];
     }
+
+    // Route-check config
+    const routeCheckConfig = config.routeCheck || {};
+    this.routeCheckEnabled = routeCheckConfig.enabled === true;
+    this.routeCheckEndpointPattern = typeof routeCheckConfig.endpointPattern === 'string' && routeCheckConfig.endpointPattern.trim()
+      ? routeCheckConfig.endpointPattern
+      : '**/purchase_event_shop_lot';
+    this.routeCheckGroups = this.normalizeRouteCheckGroups(routeCheckConfig.groups);
+  }
+
+  normalizeRouteCheckGroups(groups) {
+    if (!Array.isArray(groups)) {
+      return [];
+    }
+
+    const normalizedGroups = [];
+    for (let i = 0; i < groups.length; i++) {
+      const group = groups[i];
+      if (!group || typeof group !== 'object') {
+        console.log(`[ROUTE CHECK] Skipping invalid group at index ${i}`);
+        continue;
+      }
+
+      const name = typeof group.name === 'string' && group.name.trim()
+        ? group.name.trim()
+        : `group_${i + 1}`;
+      const lotIds = Array.isArray(group.lotIds)
+        ? [...new Set(group.lotIds.map(id => Number(id)).filter(id => Number.isFinite(id)))]
+        : [];
+      const minPoints = Number(group.minPoints);
+
+      if (lotIds.length === 0) {
+        console.log(`[ROUTE CHECK] Skipping group "${name}" because lotIds is empty or invalid`);
+        continue;
+      }
+      if (!Number.isFinite(minPoints)) {
+        console.log(`[ROUTE CHECK] Skipping group "${name}" because minPoints is invalid`);
+        continue;
+      }
+
+      normalizedGroups.push({ name, lotIds, minPoints });
+    }
+
+    return normalizedGroups;
   }
 
   async hotReloadConfig() {
@@ -99,10 +143,99 @@ class MouseRecorder {
     console.log(`  Network tracking suffix: "${this.networkTrackingSuffix}"`);
     console.log(`  Network tracking filter patterns: ${JSON.stringify(this.networkTrackingFilterPatterns)}`);
     console.log(`  Network tracking exclude filters: ${JSON.stringify(this.networkTrackingExcludeFilters)}`);
+    console.log(`  Route check enabled: ${this.routeCheckEnabled}`);
+    console.log(`  Route check endpoint pattern: ${this.routeCheckEndpointPattern}`);
+    console.log(`  Route check groups: ${JSON.stringify(this.routeCheckGroups)}`);
     console.log(`\n[HOT RELOAD] Configuration reloaded successfully\n`);
 
     // Update overlay with new config
     await this.updateFilterOverlay();
+  }
+
+  async setupRouteChecks() {
+    if (!this.routeCheckEnabled) {
+      return;
+    }
+
+    console.log(`[ROUTE CHECK] Enabled for pattern: ${this.routeCheckEndpointPattern}`);
+    if (this.routeCheckGroups.length === 0) {
+      console.log('[ROUTE CHECK] No valid groups configured. Route checks will always fail.');
+    } else {
+      console.log(`[ROUTE CHECK] Groups: ${JSON.stringify(this.routeCheckGroups)}`);
+    }
+
+    await this.page.route(this.routeCheckEndpointPattern, async (route) => {
+      const request = route.request();
+
+      try {
+        if (request.method() !== 'POST') {
+          return;
+        }
+
+        const requestUrl = request.url();
+        const body = request.postDataJSON();
+
+
+        if (!body || typeof body !== 'object') {
+          console.log(`[ROUTE CHECK FAIL] url=${requestUrl} reason=empty_or_invalid_body`);
+          return;
+        }
+
+        const rewards = Array.isArray(body.rewards) ? body.rewards : [];
+        const groupResults = this.routeCheckGroups.map(group => {
+          let sumPoints = 0;
+          let matchedCount = 0;
+          const lotIdSet = new Set(group.lotIds);
+
+          for (const reward of rewards) {
+            const lotId = Number(reward && reward.lot_id);
+            if (!Number.isFinite(lotId) || !lotIdSet.has(lotId)) {
+              continue;
+            }
+
+            matchedCount += 1;
+            const points = Number(reward && reward.points);
+            if (Number.isFinite(points)) {
+              sumPoints += points;
+            }
+          }
+
+          const status = matchedCount === 0 ? 'SKIP' : (sumPoints >= group.minPoints ? 'PASS' : 'FAIL');
+          return {
+            name: group.name,
+            status,
+            sumPoints,
+            minPoints: group.minPoints,
+            matchedCount
+          };
+        });
+
+        for (const result of groupResults) {
+          console.log(
+            `[ROUTE CHECK GROUP] group=${result.name} status=${result.status} sum=${result.sumPoints} min=${result.minPoints} matched=${result.matchedCount} url=${requestUrl}`
+          );
+        }
+
+        console.log(`[ROUTE REQUEST BODY]: ${JSON.stringify(body, null, 2)}`);
+        const overallPass = groupResults.length > 0 && groupResults.every(result => result.status === 'PASS');
+        console.log(`[ROUTE CHECK GROUP RESULT]: **** ${overallPass ? 'PASS' : 'FAIL'} ****`);
+
+
+        if (overallPass) {
+          process.stdout.write('\x07');
+          setTimeout(() => process.stdout.write('\x07'), 100);
+          setTimeout(() => process.stdout.write('\x07'), 200);
+
+          this.cancelPostReplay = true;
+          await this.disablePacketLoss();
+        }
+
+      } catch (error) {
+        console.log(`[ROUTE CHECK ERROR] url=${request.url()} error="${error.message}"`);
+      } finally {
+        await route.continue();
+      }
+    });
   }
 
   getSessionPath(url) {
@@ -224,6 +357,8 @@ class MouseRecorder {
     this.context = await this.browser.newContext(contextOptions);
 
     this.page = await this.context.newPage();
+
+    await this.setupRouteChecks();
 
     // Add network request logging (if configured)
     if (this.networkTrackingStartPatterns.length > 0) {
