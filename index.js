@@ -31,6 +31,7 @@ class MouseRecorder {
     this.targetDraw = 1;
     this.pendingReplayLoops = 0;  // Store replay count while waiting for draw count
     this.capturedUrls = [];  // Store matching URLs for overlay display
+    this.isSharedReloadInProgress = false; // Prevent overlapping reload flows
   }
 
   loadConfig() {
@@ -301,6 +302,7 @@ class MouseRecorder {
     console.log('Press "c" - Skip NOP wait during replay');
     console.log('Press "x" - Cancel replay loop / post-replay sequence');
     console.log('Press "h" - Hot reload configuration file');
+    console.log('Press "o" - Run shared restore-network reload flow');
     console.log('Press "q" - Quit\n');
     console.log('TIP: Press "p" during recording to insert packet loss into the sequence!');
 
@@ -679,6 +681,8 @@ class MouseRecorder {
           console.log('\n[CANCELLED] Replay loop/sequence cancelled by user');
         } else if (key.name === 'h') {
           await this.hotReloadConfig();
+        } else if (key.name === 'o') {
+          await this.runSharedNetworkReloadFlow('keyboard-o');
         } else if (key.name === 'q') {
           await this.cleanup();
           process.exit();
@@ -1523,46 +1527,57 @@ class MouseRecorder {
       // // Step 4: Reload the page
       console.log('[POST-REPLAY] Reloading page...');
 
-      // Wait a bit for network to stabilize after WiFi toggle
-      // await this.page.waitForTimeout(2000);
-
-      // Try to reload with error handling
-      try {
-        // Start reload with packet loss enabled (don't await - we'll cancel it)
-        const reloadPromise = this.page.reload({
-          waitUntil: 'domcontentloaded',
-          timeout: 30000
-        }).catch(err => {
-          // Expected error - reload will be aborted when we navigate to about:blank
-          console.log(`[POST-REPLAY] Reload aborted as expected: ${err.message}`);
-        });
-
-        console.log('[POST-REPLAY] wait for 1 seconds...');
-        await this.page.waitForTimeout(1000);
-
-        // Navigate to about:blank to cancel all pending requests
-        console.log('[POST-REPLAY] Cancelling pending requests...');
-        await this.page.goto('about:blank', { waitUntil: 'domcontentloaded', timeout: 5000 });
-
-        // Now it's safe to restore network - all requests are cancelled
-        await this.disablePacketLoss();
-
-        // Navigate back to the original URL
-        console.log('[POST-REPLAY] Reloading with restored network...');
-        await this.page.goto(this.currentUrl, {
-          waitUntil: 'domcontentloaded',
-          timeout: 30000
-        });
-
-      } catch (error) {
-        console.log(`[ERROR] Reload failed: ${error.message}`);
-        console.log('[INFO] You may need to manually refresh the page');
-      }
+      await this.runSharedNetworkReloadFlow('post-replay');
 
       await this.page.waitForTimeout(this.postReloadWaitTime);
       console.log('[POST-REPLAY] Page reloaded\n');
     } catch (error) {
       console.log(`[ERROR] Post-replay sequence failed: ${error.message}`);
+    }
+  }
+
+  async runSharedNetworkReloadFlow(source = 'manual') {
+    if (this.isSharedReloadInProgress) {
+      console.log(`[POST-REPLAY] Shared reload already running (trigger: ${source})`);
+      return;
+    }
+
+    this.isSharedReloadInProgress = true;
+    try {
+      // Start reload with packet loss enabled (don't await - we'll cancel it)
+      this.page.reload({
+        waitUntil: 'domcontentloaded',
+        timeout: 30000
+      }).catch(err => {
+        // Expected error - reload will be aborted when we navigate to about:blank
+        console.log(`[POST-REPLAY] Reload aborted as expected: ${err.message}`);
+      });
+
+      console.log('[POST-REPLAY] wait for 1 seconds...');
+      await this.page.waitForTimeout(1000);
+
+      // Navigate to about:blank to cancel all pending requests
+      console.log('[POST-REPLAY] Cancelling pending requests...');
+      await this.page.goto('about:blank', { waitUntil: 'domcontentloaded', timeout: 5000 });
+
+      // Now it's safe to restore network - all requests are cancelled
+      await this.disablePacketLoss();
+
+      if (!this.currentUrl) {
+        throw new Error('Current URL is not set');
+      }
+
+      // Navigate back to the original URL
+      console.log('[POST-REPLAY] Reloading with restored network...');
+      await this.page.goto(this.currentUrl, {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000
+      });
+    } catch (error) {
+      console.log(`[ERROR] Reload failed: ${error.message}`);
+      console.log('[INFO] You may need to manually refresh the page');
+    } finally {
+      this.isSharedReloadInProgress = false;
     }
   }
 
