@@ -86,6 +86,13 @@ class MouseRecorder {
       ? routeCheckConfig.endpointPattern
       : '**/purchase_event_shop_lot';
     this.routeCheckGroups = this.normalizeRouteCheckGroups(routeCheckConfig.groups);
+
+    // Resource-check config
+    const normalizedResourceCheck = this.normalizeResourceCheckConfig(config.resourceCheck || {});
+    this.resourceCheckEnabled = normalizedResourceCheck.enabled;
+    this.resourceCheckEndpointPattern = normalizedResourceCheck.endpointPattern;
+    this.resourceCheckMode = normalizedResourceCheck.mode;
+    this.resourceCheckResources = normalizedResourceCheck.resources;
   }
 
   normalizeRouteCheckGroups(groups) {
@@ -124,6 +131,44 @@ class MouseRecorder {
     return normalizedGroups;
   }
 
+  normalizeResourceCheckConfig(resourceCheckConfig) {
+    const config = resourceCheckConfig && typeof resourceCheckConfig === 'object'
+      ? resourceCheckConfig
+      : {};
+
+    const enabled = config.enabled === true;
+    const endpointPattern = typeof config.endpointPattern === 'string' && config.endpointPattern.trim()
+      ? config.endpointPattern.trim()
+      : '**/resource_actions_history';
+
+    const modeInput = typeof config.mode === 'string' ? config.mode.trim().toLowerCase() : 'any';
+    const allowedModes = new Set(['any', 'all', 'exact']);
+    const mode = allowedModes.has(modeInput) ? modeInput : 'any';
+    if (mode !== modeInput) {
+      console.log(`[RESOURCE CHECK] Invalid mode "${modeInput}", falling back to "any"`);
+    }
+
+    let resources = [];
+    if (typeof config.resources === 'string') {
+      resources = [config.resources];
+    } else if (Array.isArray(config.resources)) {
+      resources = config.resources;
+    }
+
+    const normalizedResources = [...new Set(
+      resources
+        .map(resource => typeof resource === 'string' ? resource.trim() : '')
+        .filter(Boolean)
+    )];
+
+    return {
+      enabled,
+      endpointPattern,
+      mode,
+      resources: normalizedResources
+    };
+  }
+
   async hotReloadConfig() {
     console.log('\n[HOT RELOAD] Reloading configuration...');
     const configPath = process.argv[2] || './config.json';
@@ -147,6 +192,10 @@ class MouseRecorder {
     console.log(`  Route check enabled: ${this.routeCheckEnabled}`);
     console.log(`  Route check endpoint pattern: ${this.routeCheckEndpointPattern}`);
     console.log(`  Route check groups: ${JSON.stringify(this.routeCheckGroups)}`);
+    console.log(`  Resource check enabled: ${this.resourceCheckEnabled}`);
+    console.log(`  Resource check endpoint pattern: ${this.resourceCheckEndpointPattern}`);
+    console.log(`  Resource check mode: ${this.resourceCheckMode}`);
+    console.log(`  Resource check resources: ${JSON.stringify(this.resourceCheckResources)}`);
     console.log(`\n[HOT RELOAD] Configuration reloaded successfully\n`);
 
     // Update overlay with new config
@@ -154,9 +203,6 @@ class MouseRecorder {
   }
 
   async setupRouteChecks() {
-    if (!this.routeCheckEnabled) {
-      return;
-    }
 
     console.log(`[ROUTE CHECK] Enabled for pattern: ${this.routeCheckEndpointPattern}`);
     if (this.routeCheckGroups.length === 0) {
@@ -166,6 +212,9 @@ class MouseRecorder {
     }
 
     await this.page.route(this.routeCheckEndpointPattern, async (route) => {
+      if (!this.routeCheckEnabled) {
+        return;
+      }
       const request = route.request();
 
       try {
@@ -233,6 +282,96 @@ class MouseRecorder {
 
       } catch (error) {
         console.log(`[ROUTE CHECK ERROR] url=${request.url()} error="${error.message}"`);
+      } finally {
+        await route.continue();
+      }
+    });
+  }
+
+  async setupResourceChecks() {
+    console.log(`[RESOURCE CHECK] Enabled for pattern: ${this.resourceCheckEndpointPattern}`);
+    console.log(`[RESOURCE CHECK] Mode: ${this.resourceCheckMode}`);
+    if (this.resourceCheckResources.length === 0) {
+      console.log('[RESOURCE CHECK] No configured resources. Checks will always fail.');
+    } else {
+      console.log(`[RESOURCE CHECK] Resources: ${JSON.stringify(this.resourceCheckResources)}`);
+    }
+
+    await this.page.route(this.resourceCheckEndpointPattern, async (route) => {
+      if (!this.resourceCheckEnabled) {
+        return;
+      }
+
+      const request = route.request();
+
+      try {
+        if (request.method() !== 'POST') {
+          return;
+        }
+
+        const requestUrl = request.url();
+        const body = request.postDataJSON();
+
+        if (!body || typeof body !== 'object') {
+          console.log(`[RESOURCE CHECK FAIL] url=${requestUrl} reason=empty_or_invalid_body`);
+          return;
+        }
+
+        const configuredSet = new Set(this.resourceCheckResources);
+        if (configuredSet.size === 0) {
+          console.log(`[RESOURCE CHECK FAIL] url=${requestUrl} reason=no_configured_resources`);
+          return;
+        }
+
+        const statistics = Array.isArray(body.statistics) ? body.statistics : [];
+        const observedSet = new Set();
+        for (const stat of statistics) {
+          const data = Array.isArray(stat && stat.data) ? stat.data : [];
+          for (const entry of data) {
+            const resource = entry && typeof entry.resource === 'string' ? entry.resource.trim() : '';
+            if (resource) {
+              observedSet.add(resource);
+            }
+          }
+        }
+
+        const configuredResources = [...configuredSet];
+        const observedResources = [...observedSet];
+        const matchedResources = configuredResources.filter(resource => observedSet.has(resource));
+
+        let pass = false;
+        if (this.resourceCheckMode === 'all') {
+          pass = matchedResources.length === configuredResources.length;
+        } else if (this.resourceCheckMode === 'exact') {
+          pass = matchedResources.length === configuredResources.length
+            && observedResources.length === configuredResources.length;
+        } else {
+          pass = matchedResources.length > 0;
+        }
+
+
+        if (pass) {
+          process.stdout.write('\x07');
+          setTimeout(() => process.stdout.write('\x07'), 100);
+          setTimeout(() => process.stdout.write('\x07'), 200);
+
+          this.draw += 1;
+
+          if (this.draw === this.targetDraw) {
+            this.cancelPostReplay = true;
+            console.log(`[CANCEL] Target draw count reached (${this.targetDraw}). Post-replay sequence cancelled.`);
+          }
+          await this.disablePacketLoss();
+        }
+
+        console.log(`[RESOURCE CHECK] url=${requestUrl} mode=${this.resourceCheckMode} status=${pass ? 'PASS' : 'FAIL'}`);
+        console.log(`[RESOURCE CHECK CONFIGURED]: ${JSON.stringify(configuredResources)}`);
+        console.log(`[RESOURCE CHECK OBSERVED]: ${JSON.stringify(observedResources)}`);
+        console.log(`[RESOURCE CHECK MATCHED]: ${JSON.stringify(matchedResources)}`);
+
+
+      } catch (error) {
+        console.log(`[RESOURCE CHECK ERROR] url=${request.url()} error="${error.message}"`);
       } finally {
         await route.continue();
       }
@@ -361,6 +500,7 @@ class MouseRecorder {
     this.page = await this.context.newPage();
 
     await this.setupRouteChecks();
+    await this.setupResourceChecks();
 
     // Add network request logging (if configured)
     if (this.networkTrackingStartPatterns.length > 0) {
