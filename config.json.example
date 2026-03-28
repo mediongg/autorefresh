@@ -19,6 +19,14 @@
   ],
   "networkTrackingExcludeFilters": [],
 
+  "armyActionCheck": {
+    "enabled": false,
+    "endpointPattern": "**/army_actions_history",
+    "groups": [
+      { "name": "guild_monster_roulette", "lotIds": [1603, 1608], "minPoints": 300 }
+    ]
+  },
+
   "_comment1": "predefinedUrls: Optional array of URLs to select from at startup",
   "_comment2": "On Windows, use './post-replay.bat' or './post-replay.cmd' instead of .sh",
   "_comment3": "networkTrackingStartPatterns: Array of URL patterns to start capturing requests (A)",

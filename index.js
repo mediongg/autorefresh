@@ -93,6 +93,14 @@ class MouseRecorder {
     this.resourceCheckEndpointPattern = normalizedResourceCheck.endpointPattern;
     this.resourceCheckMode = normalizedResourceCheck.mode;
     this.resourceCheckResources = normalizedResourceCheck.resources;
+
+    // Army-action-check config
+    const armyActionCheckConfig = config.armyActionCheck || {};
+    this.armyActionCheckEnabled = armyActionCheckConfig.enabled === true;
+    this.armyActionCheckEndpointPattern = typeof armyActionCheckConfig.endpointPattern === 'string' && armyActionCheckConfig.endpointPattern.trim()
+      ? armyActionCheckConfig.endpointPattern.trim()
+      : '**/army_actions_history';
+    this.armyActionCheckGroups = this.normalizeArmyActionCheckGroups(armyActionCheckConfig.groups);
   }
 
   normalizeRouteCheckGroups(groups) {
@@ -169,6 +177,42 @@ class MouseRecorder {
     };
   }
 
+  normalizeArmyActionCheckGroups(groups) {
+    if (!Array.isArray(groups)) {
+      return [];
+    }
+
+    const normalizedGroups = [];
+    for (let i = 0; i < groups.length; i++) {
+      const group = groups[i];
+      if (!group || typeof group !== 'object') {
+        console.log(`[ARMY ACTION CHECK] Skipping invalid group at index ${i}`);
+        continue;
+      }
+
+      const name = typeof group.name === 'string' && group.name.trim()
+        ? group.name.trim()
+        : `group_${i + 1}`;
+      const lotIds = Array.isArray(group.lotIds)
+        ? [...new Set(group.lotIds.map(id => Number(id)).filter(id => Number.isFinite(id)))]
+        : [];
+      const minPoints = Number(group.minPoints);
+
+      if (lotIds.length === 0) {
+        console.log(`[ARMY ACTION CHECK] Skipping group "${name}" because lotIds is empty or invalid`);
+        continue;
+      }
+      if (!Number.isFinite(minPoints)) {
+        console.log(`[ARMY ACTION CHECK] Skipping group "${name}" because minPoints is invalid`);
+        continue;
+      }
+
+      normalizedGroups.push({ name, lotIds, minPoints });
+    }
+
+    return normalizedGroups;
+  }
+
   async hotReloadConfig() {
     console.log('\n[HOT RELOAD] Reloading configuration...');
     const configPath = process.argv[2] || './config.json';
@@ -196,6 +240,9 @@ class MouseRecorder {
     console.log(`  Resource check endpoint pattern: ${this.resourceCheckEndpointPattern}`);
     console.log(`  Resource check mode: ${this.resourceCheckMode}`);
     console.log(`  Resource check resources: ${JSON.stringify(this.resourceCheckResources)}`);
+    console.log(`  Army action check enabled: ${this.armyActionCheckEnabled}`);
+    console.log(`  Army action check endpoint pattern: ${this.armyActionCheckEndpointPattern}`);
+    console.log(`  Army action check groups: ${JSON.stringify(this.armyActionCheckGroups)}`);
     console.log(`\n[HOT RELOAD] Configuration reloaded successfully\n`);
 
     // Update overlay with new config
@@ -378,6 +425,106 @@ class MouseRecorder {
     });
   }
 
+  async setupArmyActionChecks() {
+    console.log(`[ARMY ACTION CHECK] Enabled for pattern: ${this.armyActionCheckEndpointPattern}`);
+    if (this.armyActionCheckGroups.length === 0) {
+      console.log('[ARMY ACTION CHECK] No valid groups configured. Army action checks will always fail.');
+    } else {
+      console.log(`[ARMY ACTION CHECK] Groups: ${JSON.stringify(this.armyActionCheckGroups)}`);
+    }
+
+    await this.page.route(this.armyActionCheckEndpointPattern, async (route) => {
+      if (!this.armyActionCheckEnabled) {
+        return;
+      }
+
+      const request = route.request();
+
+      try {
+        if (request.method() !== 'POST') {
+          return;
+        }
+
+        const requestUrl = request.url();
+        const body = request.postDataJSON();
+
+        if (!body || typeof body !== 'object') {
+          console.log(`[ARMY ACTION CHECK FAIL] url=${requestUrl} reason=empty_or_invalid_body`);
+          return;
+        }
+        console.log(`[ARMY ACTION REQUEST BODY]: ${JSON.stringify(body, null, 2)}`);
+
+        const statistics = Array.isArray(body.statistics) ? body.statistics : [];
+        const entries = [];
+        const loggedEntries = [];
+
+        for (const stat of statistics) {
+          const data = Array.isArray(stat && stat.data) ? stat.data : [];
+          for (const entry of data) {
+            entries.push(entry);
+            const lotId = Number(entry && entry.validate_info && entry.validate_info.infoParams && entry.validate_info.infoParams.lot_id);
+            const difference = Number(entry && entry.difference);
+            loggedEntries.push({
+              lotId: Number.isFinite(lotId) ? lotId : null,
+              difference: Number.isFinite(difference) ? difference : null
+            });
+          }
+        }
+
+        const groupResults = this.armyActionCheckGroups.map(group => {
+          let sumPoints = 0;
+          let matchedCount = 0;
+          const lotIdSet = new Set(group.lotIds);
+
+          for (const entry of entries) {
+            const lotId = Number(entry && entry.validate_info && entry.validate_info.infoParams && entry.validate_info.infoParams.lot_id);
+            if (!Number.isFinite(lotId) || !lotIdSet.has(lotId)) {
+              continue;
+            }
+
+            matchedCount += 1;
+            const difference = Number(entry && entry.difference);
+            if (Number.isFinite(difference)) {
+              sumPoints += Math.abs(difference);
+            }
+          }
+
+          const status = matchedCount === 0 ? 'SKIP' : (sumPoints >= group.minPoints ? 'PASS' : 'FAIL');
+          return {
+            name: group.name,
+            status,
+            sumPoints,
+            minPoints: group.minPoints,
+            matchedCount
+          };
+        });
+
+        console.log(`[ARMY ACTION ENTRIES] url=${requestUrl} entries=${JSON.stringify(loggedEntries, null, 2)}`);
+        for (const result of groupResults) {
+          console.log(
+            `[ARMY ACTION CHECK GROUP] group=${result.name} status=${result.status} sum=${result.sumPoints} min=${result.minPoints} matched=${result.matchedCount} url=${requestUrl}`
+          );
+        }
+
+        const overallPass = groupResults.length > 0 && groupResults.every(result => result.status === 'PASS');
+        console.log(`[ARMY ACTION CHECK GROUP RESULT]: **** ${overallPass ? 'PASS' : 'FAIL'} ****`);
+
+        if (overallPass) {
+          process.stdout.write('\x07');
+          setTimeout(() => process.stdout.write('\x07'), 100);
+          setTimeout(() => process.stdout.write('\x07'), 200);
+
+          this.cancelPostReplay = true;
+          await this.disablePacketLoss();
+        }
+      } catch (error) {
+        console.log(`[ARMY ACTION CHECK ERROR] url=${request.url()} error="${error.message}"`);
+      } finally {
+        await route.continue();
+      }
+    });
+  }
+
   getSessionPath(url) {
     // Sanitize URL to create a readable and safe filename
     const sanitizedUrl = url.replace(/[^a-zA-Z0-9.-]/g, '_');
@@ -501,6 +648,7 @@ class MouseRecorder {
 
     await this.setupRouteChecks();
     await this.setupResourceChecks();
+    await this.setupArmyActionChecks();
 
     // Add network request logging (if configured)
     if (this.networkTrackingStartPatterns.length > 0) {
@@ -1317,7 +1465,6 @@ class MouseRecorder {
 
         // Reset network capturing state at the start of each replay iteration
         this.isCapturing = false;
-
 
         console.log('[REPLAY] Waiting for NOP request after reload...');
         console.log('[TIP] Press "c" to skip waiting for NOP');
