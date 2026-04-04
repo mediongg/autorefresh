@@ -58,6 +58,13 @@ class MouseRecorder {
     this.postReplayScript = config.postReplayScript || defaultScript;
     this.postReplayWaitTime = config.postReplayWaitTime || 6000;  // Default: 6 seconds
     this.postReloadWaitTime = config.postReloadWaitTime || 8000;  // Default: 8 seconds
+    this.animationSpeedMultiplier = Number(config.animationSpeedMultiplier);
+    if (!Number.isFinite(this.animationSpeedMultiplier) || this.animationSpeedMultiplier <= 0) {
+      this.animationSpeedMultiplier = 1;
+    }
+    if (typeof this.isAnimationSpeedEnabled !== 'boolean') {
+      this.isAnimationSpeedEnabled = false;
+    }
 
     // Network tracking patterns (can be single string or array of strings)
     this.networkTrackingStartPatterns = config.networkTrackingStartPatterns || [];
@@ -101,6 +108,165 @@ class MouseRecorder {
       ? armyActionCheckConfig.endpointPattern.trim()
       : '**/army_actions_history';
     this.armyActionCheckGroups = this.normalizeArmyActionCheckGroups(armyActionCheckConfig.groups);
+  }
+
+  getAnimationSpeedInitScript() {
+    return `
+      (() => {
+        const globalObject = window;
+        const existingState = globalObject.__playwrightAnimationSpeedState;
+        const requestedSpeed = Number(globalObject.__playwrightAnimationSpeedMultiplier || 1);
+        const nextSpeed = Number.isFinite(requestedSpeed) && requestedSpeed > 0 ? requestedSpeed : 1;
+
+        if (existingState) {
+          const realNow = existingState.realPerformanceNow();
+          const currentPerformanceNow = existingState.getScaledPerformanceNow();
+          const currentDateNow = existingState.getScaledDateNow();
+          existingState.baseRealPerformanceNow = realNow;
+          existingState.baseScaledPerformanceNow = currentPerformanceNow;
+          existingState.baseRealDateNow = existingState.realDateNow();
+          existingState.baseScaledDateNow = currentDateNow;
+          existingState.speed = nextSpeed;
+          globalObject.__playwrightAnimationSpeedMultiplier = nextSpeed;
+          return;
+        }
+
+        const state = {
+          speed: nextSpeed,
+          realPerformanceNow: globalObject.performance.now.bind(globalObject.performance),
+          realDateNow: Date.now.bind(Date),
+          realRequestAnimationFrame: globalObject.requestAnimationFrame.bind(globalObject),
+          realSetTimeout: globalObject.setTimeout.bind(globalObject),
+          realSetInterval: globalObject.setInterval.bind(globalObject),
+          baseRealPerformanceNow: 0,
+          baseScaledPerformanceNow: 0,
+          baseRealDateNow: 0,
+          baseScaledDateNow: 0
+        };
+
+        state.baseRealPerformanceNow = state.realPerformanceNow();
+        state.baseScaledPerformanceNow = state.baseRealPerformanceNow;
+        state.baseRealDateNow = state.realDateNow();
+        state.baseScaledDateNow = state.baseRealDateNow;
+
+        state.getScaledPerformanceNow = () => {
+          const elapsed = state.realPerformanceNow() - state.baseRealPerformanceNow;
+          return state.baseScaledPerformanceNow + (elapsed * state.speed);
+        };
+
+        state.getScaledDateNow = () => {
+          const elapsed = state.realDateNow() - state.baseRealDateNow;
+          return Math.floor(state.baseScaledDateNow + (elapsed * state.speed));
+        };
+
+        globalObject.__playwrightAnimationSpeedState = state;
+        globalObject.__playwrightAnimationSpeedMultiplier = nextSpeed;
+
+        try {
+          Object.defineProperty(Date, 'now', {
+            configurable: true,
+            value: () => state.getScaledDateNow()
+          });
+        } catch (error) {}
+
+        try {
+          Object.defineProperty(globalObject.performance, 'now', {
+            configurable: true,
+            value: () => state.getScaledPerformanceNow()
+          });
+        } catch (error) {
+          try {
+            Object.defineProperty(Object.getPrototypeOf(globalObject.performance), 'now', {
+              configurable: true,
+              value: function now() {
+                return state.getScaledPerformanceNow();
+              }
+            });
+          } catch (innerError) {}
+        }
+
+        globalObject.requestAnimationFrame = function requestAnimationFrame(callback) {
+          return state.realRequestAnimationFrame((timestamp) => {
+            const scaledTimestamp = state.baseScaledPerformanceNow
+              + ((timestamp - state.baseRealPerformanceNow) * state.speed);
+            callback(scaledTimestamp);
+          });
+        };
+
+        globalObject.setTimeout = function setTimeout(callback, delay, ...args) {
+          const scaledDelay = Math.max(0, Number(delay) / state.speed || 0);
+          if (typeof callback === 'function') {
+            return state.realSetTimeout(callback, scaledDelay, ...args);
+          }
+          return state.realSetTimeout(callback, scaledDelay, ...args);
+        };
+
+        globalObject.setInterval = function setInterval(callback, delay, ...args) {
+          const scaledDelay = Math.max(0, Number(delay) / state.speed || 0);
+          if (typeof callback === 'function') {
+            return state.realSetInterval(callback, scaledDelay, ...args);
+          }
+          return state.realSetInterval(callback, scaledDelay, ...args);
+        };
+      })();
+    `;
+  }
+
+  async installAnimationSpeedHooks() {
+    const speed = this.getCurrentAnimationSpeedMultiplier();
+    const initScript = this.getAnimationSpeedInitScript();
+
+    await this.context.addInitScript((multiplier) => {
+      window.__playwrightAnimationSpeedMultiplier = multiplier;
+    }, speed);
+    await this.context.addInitScript({ content: initScript });
+
+    console.log(`[ANIMATION] Configured page animation speed multiplier: ${speed}x`);
+  }
+
+  async applyAnimationSpeedToCurrentPage() {
+    if (!this.page || this.page.isClosed()) {
+      return;
+    }
+
+    const speed = this.getCurrentAnimationSpeedMultiplier();
+    const applyToFrame = async (frame) => {
+      try {
+        await frame.evaluate(({ multiplier, initScript }) => {
+          window.__playwrightAnimationSpeedMultiplier = multiplier;
+          eval(initScript);
+        }, { multiplier: speed, initScript: this.getAnimationSpeedInitScript() });
+      } catch (error) {
+        console.log(`[ANIMATION] Skipped frame update: ${error.message}`);
+      }
+    };
+
+    await applyToFrame(this.page.mainFrame());
+    for (const frame of this.page.frames()) {
+      if (frame === this.page.mainFrame()) {
+        continue;
+      }
+      await applyToFrame(frame);
+    }
+
+    console.log(`[ANIMATION] Applied live animation speed multiplier: ${speed}x`);
+  }
+
+  getCurrentAnimationSpeedMultiplier() {
+    return this.isAnimationSpeedEnabled ? this.animationSpeedMultiplier : 1;
+  }
+
+  async toggleAnimationSpeed() {
+    if (this.animationSpeedMultiplier === 1) {
+      console.log('\n[ANIMATION] Configured multiplier is 1x. Set "animationSpeedMultiplier" above 1 in config to use toggle.');
+      return;
+    }
+
+    this.isAnimationSpeedEnabled = !this.isAnimationSpeedEnabled;
+    await this.applyAnimationSpeedToCurrentPage();
+    const speed = this.getCurrentAnimationSpeedMultiplier();
+    const stateLabel = this.isAnimationSpeedEnabled ? 'enabled' : 'disabled';
+    console.log(`\n[ANIMATION] Speed ${stateLabel}. Current multiplier: ${speed}x`);
   }
 
   normalizeRouteCheckGroups(groups) {
@@ -229,6 +395,7 @@ class MouseRecorder {
     console.log('\n[CONFIG] Current settings:');
     console.log(`  Post-replay wait time: ${this.postReplayWaitTime}ms ${oldPostReplayWaitTime !== this.postReplayWaitTime ? '(CHANGED)' : ''}`);
     console.log(`  Post-reload wait time: ${this.postReloadWaitTime}ms ${oldPostReloadWaitTime !== this.postReloadWaitTime ? '(CHANGED)' : ''}`);
+    console.log(`  Animation speed multiplier: ${this.animationSpeedMultiplier}x (${this.isAnimationSpeedEnabled ? 'enabled' : 'disabled'}, current ${this.getCurrentAnimationSpeedMultiplier()}x)`);
     console.log(`  Network tracking start patterns: ${JSON.stringify(this.networkTrackingStartPatterns)}`);
     console.log(`  Network tracking suffix: "${this.networkTrackingSuffix}"`);
     console.log(`  Network tracking filter patterns: ${JSON.stringify(this.networkTrackingFilterPatterns)}`);
@@ -247,6 +414,7 @@ class MouseRecorder {
 
     // Update overlay with new config
     await this.updateFilterOverlay();
+    await this.applyAnimationSpeedToCurrentPage();
   }
 
   async setupRouteChecks() {
@@ -588,6 +756,7 @@ class MouseRecorder {
     console.log('Press "c" - Skip NOP wait during replay');
     console.log('Press "x" - Cancel replay loop / post-replay sequence');
     console.log('Press "h" - Hot reload configuration file');
+    console.log('Press "u" - Toggle page animation speed');
     console.log('Press "o" - Run shared restore-network reload flow');
     console.log('Press "q" - Quit\n');
     console.log('TIP: Press "p" during recording to insert packet loss into the sequence!');
@@ -643,8 +812,28 @@ class MouseRecorder {
     }
 
     this.context = await this.browser.newContext(contextOptions);
+    await this.installAnimationSpeedHooks();
 
     this.page = await this.context.newPage();
+    this.page.on('frameattached', async (frame) => {
+      const speed = this.getCurrentAnimationSpeedMultiplier();
+
+      try {
+        await frame.waitForLoadState('domcontentloaded', { timeout: 5000 });
+      } catch (error) {}
+
+      try {
+        await frame.evaluate(({ multiplier, initScript }) => {
+          window.__playwrightAnimationSpeedMultiplier = multiplier;
+          eval(initScript);
+        }, {
+          multiplier: speed,
+          initScript: this.getAnimationSpeedInitScript()
+        });
+      } catch (error) {
+        console.log(`[ANIMATION] Could not update attached frame: ${error.message}`);
+      }
+    });
 
     await this.setupRouteChecks();
     await this.setupResourceChecks();
@@ -736,6 +925,7 @@ class MouseRecorder {
 
     console.log(`Navigating to ${url}...`);
     await this.page.goto(url);
+    await this.applyAnimationSpeedToCurrentPage();
 
     console.log('Browser ready!\n');
   }
@@ -969,6 +1159,8 @@ class MouseRecorder {
           console.log('\n[CANCELLED] Replay loop/sequence cancelled by user');
         } else if (key.name === 'h') {
           await this.hotReloadConfig();
+        } else if (key.name === 'u') {
+          await this.toggleAnimationSpeed();
         } else if (key.name === 'o') {
           await this.runSharedNetworkReloadFlow('keyboard-o');
         } else if (key.name === 'q') {
