@@ -62,6 +62,9 @@ class MouseRecorder {
     if (!Number.isFinite(this.animationSpeedMultiplier) || this.animationSpeedMultiplier <= 0) {
       this.animationSpeedMultiplier = 1;
     }
+    if (!this.isAnimationSpeedEnabled || !Number.isFinite(this.activeAnimationSpeedMultiplier) || this.activeAnimationSpeedMultiplier <= 0) {
+      this.activeAnimationSpeedMultiplier = this.animationSpeedMultiplier;
+    }
     if (typeof this.isAnimationSpeedEnabled !== 'boolean') {
       this.isAnimationSpeedEnabled = false;
     }
@@ -253,16 +256,26 @@ class MouseRecorder {
   }
 
   getCurrentAnimationSpeedMultiplier() {
-    return this.isAnimationSpeedEnabled ? this.animationSpeedMultiplier : 1;
+    return this.isAnimationSpeedEnabled ? this.activeAnimationSpeedMultiplier : 1;
   }
 
-  async toggleAnimationSpeed() {
-    if (this.animationSpeedMultiplier === 1) {
+  async toggleAnimationSpeed(overrideMultiplier = null) {
+    const requestedMultiplier = Number(overrideMultiplier);
+    const targetMultiplier = Number.isFinite(requestedMultiplier) && requestedMultiplier > 0
+      ? requestedMultiplier
+      : this.animationSpeedMultiplier;
+
+    if (targetMultiplier === 1) {
       console.log('\n[ANIMATION] Configured multiplier is 1x. Set "animationSpeedMultiplier" above 1 in config to use toggle.');
       return;
     }
 
     this.isAnimationSpeedEnabled = !this.isAnimationSpeedEnabled;
+    if (this.isAnimationSpeedEnabled) {
+      this.activeAnimationSpeedMultiplier = targetMultiplier;
+    } else {
+      this.activeAnimationSpeedMultiplier = this.animationSpeedMultiplier;
+    }
     await this.applyAnimationSpeedToCurrentPage();
     const speed = this.getCurrentAnimationSpeedMultiplier();
     const stateLabel = this.isAnimationSpeedEnabled ? 'enabled' : 'disabled';
@@ -756,6 +769,7 @@ class MouseRecorder {
     console.log('Press "c" - Skip NOP wait during replay');
     console.log('Press "x" - Cancel replay loop / post-replay sequence');
     console.log('Press "h" - Hot reload configuration file');
+    console.log('Press "y" - Toggle page animation speed (fixed 3.2x)');
     console.log('Press "u" - Toggle page animation speed');
     console.log('Press "o" - Run shared restore-network reload flow');
     console.log('Press "q" - Quit\n');
@@ -1159,6 +1173,10 @@ class MouseRecorder {
           console.log('\n[CANCELLED] Replay loop/sequence cancelled by user');
         } else if (key.name === 'h') {
           await this.hotReloadConfig();
+        } else if (key.name === 't') {
+          await this.toggleAnimationSpeed(10);
+        } else if (key.name === 'y') {
+          await this.toggleAnimationSpeed(3.2);
         } else if (key.name === 'u') {
           await this.toggleAnimationSpeed();
         } else if (key.name === 'o') {
