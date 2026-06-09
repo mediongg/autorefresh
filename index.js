@@ -32,6 +32,8 @@ class MouseRecorder {
     this.pendingReplayLoops = 0;  // Store replay count while waiting for draw count
     this.capturedUrls = [];  // Store matching URLs for overlay display
     this.isSharedReloadInProgress = false; // Prevent overlapping reload flows
+    this._mainCdpClient = null;
+    this._frameCdpClients = [];
   }
 
   loadConfig() {
@@ -2082,10 +2084,10 @@ class MouseRecorder {
     try {
       console.log('[NETWORK] Enabling 100% packet loss...');
 
-      // Apply network emulation to main page
-      const mainClient = await this.page.context().newCDPSession(this.page);
-      await mainClient.send('Network.enable');
-      await mainClient.send('Network.emulateNetworkConditions', {
+      // Apply network emulation to main page and store session for reuse in disable
+      this._mainCdpClient = await this.page.context().newCDPSession(this.page);
+      await this._mainCdpClient.send('Network.enable');
+      await this._mainCdpClient.send('Network.emulateNetworkConditions', {
         offline: false,
         downloadThroughput: 1,
         uploadThroughput: 1,
@@ -2095,7 +2097,8 @@ class MouseRecorder {
         packetReordering: false
       });
 
-      // Apply network emulation to all iframes
+      // Apply network emulation to all iframes and store sessions
+      this._frameCdpClients = [];
       const frames = this.page.frames();
       for (const frame of frames) {
         if (frame !== this.page.mainFrame()) {
@@ -2111,6 +2114,7 @@ class MouseRecorder {
               packetQueueLength: 0,
               packetReordering: false
             });
+            this._frameCdpClients.push(frameClient);
           } catch (err) {
             // Frame might not support CDP (cross-origin), skip it
           }
@@ -2152,9 +2156,7 @@ class MouseRecorder {
     try {
       console.log('[NETWORK] Disabling packet loss...');
 
-      // Restore network for main page
-      const mainClient = await this.page.context().newCDPSession(this.page);
-      await mainClient.send('Network.emulateNetworkConditions', {
+      const restoreConditions = {
         offline: false,
         downloadThroughput: -1,
         uploadThroughput: -1,
@@ -2162,28 +2164,26 @@ class MouseRecorder {
         packetLoss: 0,
         packetQueueLength: 0,
         packetReordering: false
-      });
+      };
 
-      // Restore network for all iframes
-      const frames = this.page.frames();
-      for (const frame of frames) {
-        if (frame !== this.page.mainFrame()) {
-          try {
-            const frameClient = await this.page.context().newCDPSession(frame);
-            await frameClient.send('Network.emulateNetworkConditions', {
-              offline: false,
-              downloadThroughput: -1,
-              uploadThroughput: -1,
-              latency: 0,
-              packetLoss: 0,
-              packetQueueLength: 0,
-              packetReordering: false
-            });
-          } catch (err) {
-            // Frame might not support CDP, skip it
-          }
+      // Reuse the same session that applied the throttle — a new session won't clear the old one's conditions
+      if (this._mainCdpClient) {
+        await this._mainCdpClient.send('Network.emulateNetworkConditions', restoreConditions);
+        this._mainCdpClient = null;
+      } else {
+        // Fallback if called without a prior enable (e.g. on startup cleanup)
+        const mainClient = await this.page.context().newCDPSession(this.page);
+        await mainClient.send('Network.emulateNetworkConditions', restoreConditions);
+      }
+
+      for (const frameClient of this._frameCdpClients) {
+        try {
+          await frameClient.send('Network.emulateNetworkConditions', restoreConditions);
+        } catch (err) {
+          // Frame session may have expired, skip it
         }
       }
+      this._frameCdpClients = [];
 
       await this.page.evaluate(() => {
         const indicator = document.getElementById('__packet_loss_indicator');
