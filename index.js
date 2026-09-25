@@ -2043,19 +2043,9 @@ class MouseRecorder {
 
     this.isSharedReloadInProgress = true;
     try {
-      // Start reload with packet loss enabled (don't await - we'll cancel it)
-      this.page.reload({
-        waitUntil: 'domcontentloaded',
-        timeout: 30000
-      }).catch(err => {
-        // Expected error - reload will be aborted when we navigate to about:blank
-        console.log(`[POST-REPLAY] Reload aborted as expected: ${err.message}`);
-      });
-
-      console.log('[POST-REPLAY] wait for 1 seconds...');
-      await this.page.waitForTimeout(1000);
-
-      // Navigate to about:blank to cancel all pending requests
+      // Cancel any in-flight work by navigating away first, then reload cleanly.
+      // Starting a reload and then immediately navigating to about:blank creates
+      // a race where Playwright reports one navigation interrupting the other.
       console.log('[POST-REPLAY] Cancelling pending requests...');
       await this.page.goto('about:blank', { waitUntil: 'domcontentloaded', timeout: 5000 });
 
